@@ -80,7 +80,12 @@ func TestBroker_IngestLogsPublishedTelemetry(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- ingest.Run(ctx, b, log)
+		errCh <- ingest.Run(
+			ctx,
+			b,
+			nopSink{},
+			log,
+		)
 	}()
 
 	payload := []byte(`{"vin":"TESTVIN000000001","lat":-23.55,"lng":-46.63}`)
@@ -128,6 +133,10 @@ func TestBroker_StartListensOnTCP(t *testing.T) {
 	}
 	_ = conn.Close()
 }
+
+type nopSink struct{}
+
+func (nopSink) Apply(ingest.Telemetry) {}
 
 type syncBuffer struct {
 	mu sync.Mutex
