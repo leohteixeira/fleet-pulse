@@ -76,17 +76,24 @@ func (m *Memory) Seed(vehicles []Vehicle) {
 	}
 }
 
+// Contains reports whether lat/lng sits inside the allowed rectangle.
+func (p Polygon) Contains(lat, lng float64) bool {
+	return lat >= p.South && lat <= p.North && lng >= p.West && lng <= p.East
+}
+
 // Apply writes last-known fields for a VIN after a successful ingest parse.
-func (m *Memory) Apply(update Vehicle) {
+// crossed is true only when last-known moves from inside the polygon to outside.
+func (m *Memory) Apply(update Vehicle) (exit Vehicle, crossed bool) {
 	if update.VIN == "" {
-		return
+		return Vehicle{}, false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.vehicles == nil {
 		m.vehicles = make(map[string]Vehicle)
 	}
-	cur := m.vehicles[update.VIN]
+	cur, existed := m.vehicles[update.VIN]
+	wasInside := existed && m.polygon.Contains(cur.Lat, cur.Lng)
 	cur.VIN = update.VIN
 	if update.DisplayID != "" {
 		cur.DisplayID = update.DisplayID
@@ -103,6 +110,10 @@ func (m *Memory) Apply(update Vehicle) {
 	cur.Odometer = update.Odometer
 	cur.Trip = update.Trip
 	m.vehicles[update.VIN] = cur
+	if wasInside && !m.polygon.Contains(cur.Lat, cur.Lng) {
+		return cur, true
+	}
+	return Vehicle{}, false
 }
 
 // Has reports whether vin exists in the roster or last-known map.

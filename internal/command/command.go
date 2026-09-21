@@ -1,4 +1,4 @@
-// Package command owns the asynchronous unlock state machine.
+// Package command owns the asynchronous lock/unlock state machine.
 package command
 
 import (
@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	// ActionUnlock is the only action this story implements.
+	// ActionUnlock is a door-unlock command.
 	ActionUnlock = "unlock"
+	// ActionLock is a door-lock command.
+	ActionLock = "lock"
 
 	// StatePending is HTTP-accepted and not yet published.
 	StatePending = "PENDING"
@@ -41,18 +43,20 @@ var (
 	ErrMissingKey = errors.New("command: missing idempotency key")
 	// ErrUnknownVIN is returned when the VIN is not in the fleet.
 	ErrUnknownVIN = errors.New("command: unknown vin")
+	// ErrUnknownAction is returned when action is not lock or unlock.
+	ErrUnknownAction = errors.New("command: unknown action")
 )
 
-// ConflictError is a distinct new unlock while one is PENDING or SENT.
+// ConflictError is a distinct new command while the one-deep queue is full.
 type ConflictError struct {
 	Current Record
 }
 
 func (e *ConflictError) Error() string {
-	return "command: unlock already in flight"
+	return "command: queue full"
 }
 
-// Record is one unlock command.
+// Record is one lock or unlock command.
 type Record struct {
 	ID            string    `json:"id"`
 	VIN           string    `json:"vin"`
@@ -82,12 +86,13 @@ type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() }
 
-// Service is the unlock machine: create, publish, ack, expire, replay.
+// Service is the lock/unlock machine: create, queue, publish, ack, expire, replay.
 type Service struct {
 	mu       sync.Mutex
 	records  map[string]*Record
 	byKey    map[string]string
 	inFlight map[string]string
+	queued   map[string]string
 	pub      Publisher
 	vehicles Vehicles
 	clock    Clock
@@ -108,6 +113,7 @@ func New(pub Publisher, vehicles Vehicles, log *slog.Logger) *Service {
 		records:  make(map[string]*Record),
 		byKey:    make(map[string]string),
 		inFlight: make(map[string]string),
+		queued:   make(map[string]string),
 		pub:      pub,
 		vehicles: vehicles,
 		clock:    realClock{},
@@ -127,52 +133,89 @@ func (s *Service) SetListener(fn func(Record)) {
 	s.listener = fn
 }
 
-// Unlock creates or replays an unlock for vin+key. Same key does not republish.
+// Unlock creates or replays an unlock for vin+key.
 func (s *Service) Unlock(ctx context.Context, vin, key string) (Record, error) {
+	return s.Submit(ctx, vin, ActionUnlock, key)
+}
+
+// Lock creates or replays a lock for vin+key.
+func (s *Service) Lock(ctx context.Context, vin, key string) (Record, error) {
+	return s.Submit(ctx, vin, ActionLock, key)
+}
+
+// Submit creates or replays a door command. Same vin+action+key does not republish.
+// A distinct command while one is PENDING or SENT is accepted as unpublished PENDING.
+// A third distinct command while that slot is full returns ConflictError with the in-flight record.
+func (s *Service) Submit(ctx context.Context, vin, action, key string) (Record, error) {
 	if key == "" {
 		return Record{}, ErrMissingKey
+	}
+	if !validAction(action) {
+		return Record{}, ErrUnknownAction
 	}
 	if vin == "" || !s.vehicles.Has(vin) {
 		return Record{}, ErrUnknownVIN
 	}
 
 	s.mu.Lock()
-	if id, ok := s.byKey[idempotencyKey(vin, ActionUnlock, key)]; ok {
+	if id, ok := s.byKey[idempotencyKey(vin, action, key)]; ok {
 		rec := *s.records[id]
 		s.mu.Unlock()
 		return rec, nil
 	}
-	if id, ok := s.inFlight[flightKey(vin, ActionUnlock)]; ok {
-		rec := *s.records[id]
+	if flightID, ok := s.inFlight[vin]; ok {
+		if _, full := s.queued[vin]; full {
+			rec := *s.records[flightID]
+			s.mu.Unlock()
+			return Record{}, &ConflictError{Current: rec}
+		}
+		rec := s.accept(vin, action, key)
+		s.queued[vin] = rec.ID
+		accepted := *rec
+		s.logAccept(rec)
 		s.mu.Unlock()
-		return Record{}, &ConflictError{Current: rec}
+		s.notify(accepted)
+		return accepted, nil
 	}
 
+	rec := s.accept(vin, action, key)
+	s.inFlight[vin] = rec.ID
+	accepted := *rec
+	s.logAccept(rec)
+	s.mu.Unlock()
+	s.notify(accepted)
+	return s.publish(ctx, rec)
+}
+
+func (s *Service) accept(vin, action, key string) *Record {
 	rec := &Record{
 		ID:            s.newID(),
 		VIN:           vin,
-		Action:        ActionUnlock,
+		Action:        action,
 		State:         StatePending,
 		CorrelationID: s.newID(),
 		Key:           key,
 	}
 	s.records[rec.ID] = rec
-	s.byKey[idempotencyKey(vin, ActionUnlock, key)] = rec.ID
-	s.inFlight[flightKey(vin, ActionUnlock)] = rec.ID
-	accepted := *rec
-	s.log.Info("unlock accepted",
+	s.byKey[idempotencyKey(vin, action, key)] = rec.ID
+	return rec
+}
+
+func (s *Service) logAccept(rec *Record) {
+	s.log.Info("command accepted",
 		"correlationId", rec.CorrelationID,
 		"commandId", rec.ID,
-		"vin", vin,
+		"vin", rec.VIN,
+		"action", rec.Action,
 		"state", rec.State,
 	)
-	s.mu.Unlock()
-	s.notify(accepted)
+}
 
+func (s *Service) publish(ctx context.Context, rec *Record) (Record, error) {
 	payload, err := json.Marshal(wireCommand{
-		ID:            accepted.ID,
-		Action:        ActionUnlock,
-		CorrelationID: accepted.CorrelationID,
+		ID:            rec.ID,
+		Action:        rec.Action,
+		CorrelationID: rec.CorrelationID,
 	})
 	if err != nil {
 		return s.failPublish(rec, fmt.Errorf("encode command: %w", err))
@@ -180,7 +223,7 @@ func (s *Service) Unlock(ctx context.Context, vin, key string) (Record, error) {
 
 	pubCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
 	defer cancel()
-	if err := s.pub.Publish(pubCtx, Topic(vin), payload); err != nil {
+	if err := s.pub.Publish(pubCtx, Topic(rec.VIN), payload); err != nil {
 		return s.failPublish(rec, fmt.Errorf("publish command: %w", err))
 	}
 
@@ -193,12 +236,20 @@ func (s *Service) Unlock(ctx context.Context, vin, key string) (Record, error) {
 	s.log.Info("command published",
 		"correlationId", rec.CorrelationID,
 		"commandId", rec.ID,
-		"vin", vin,
+		"vin", rec.VIN,
+		"action", rec.Action,
 		"state", rec.State,
 	)
 	s.mu.Unlock()
 	s.notify(sent)
 	return sent, nil
+}
+
+func (s *Service) publishSuccessor(next *Record) {
+	if next == nil {
+		return
+	}
+	_, _ = s.publish(context.Background(), next)
 }
 
 // Get returns a copy of the command record.
@@ -212,7 +263,7 @@ func (s *Service) Get(id string) (Record, bool) {
 	return *rec, true
 }
 
-// Apply records a device ack. Unknown or malformed ids are ignored.
+// Apply records a device ack. Unknown, queued, or terminal ids are ignored.
 func (s *Service) Apply(commandID string, ok bool) {
 	if commandID == "" {
 		return
@@ -221,6 +272,10 @@ func (s *Service) Apply(commandID string, ok bool) {
 	s.mu.Lock()
 	rec, exists := s.records[commandID]
 	if !exists {
+		s.mu.Unlock()
+		return
+	}
+	if s.inFlight[rec.VIN] != rec.ID {
 		s.mu.Unlock()
 		return
 	}
@@ -234,16 +289,18 @@ func (s *Service) Apply(commandID string, ok bool) {
 	} else {
 		rec.State = StateFailed
 	}
-	delete(s.inFlight, flightKey(rec.VIN, rec.Action))
+	next := s.promote(rec.VIN)
 	updated := *rec
 	s.log.Info("command ack",
 		"correlationId", rec.CorrelationID,
 		"commandId", rec.ID,
 		"vin", rec.VIN,
+		"action", rec.Action,
 		"state", rec.State,
 	)
 	s.mu.Unlock()
 	s.notify(updated)
+	s.publishSuccessor(next)
 }
 
 // Expire moves SENT commands past Expiry to TIMEOUT.
@@ -251,6 +308,7 @@ func (s *Service) Expire() {
 	s.mu.Lock()
 	now := s.clock.Now()
 	changed := make([]Record, 0)
+	successors := make([]*Record, 0)
 	for _, rec := range s.records {
 		if rec.State != StateSent || rec.SentAt.IsZero() {
 			continue
@@ -259,18 +317,24 @@ func (s *Service) Expire() {
 			continue
 		}
 		rec.State = StateTimeout
-		delete(s.inFlight, flightKey(rec.VIN, rec.Action))
+		if next := s.promote(rec.VIN); next != nil {
+			successors = append(successors, next)
+		}
 		changed = append(changed, *rec)
 		s.log.Info("command timeout",
 			"correlationId", rec.CorrelationID,
 			"commandId", rec.ID,
 			"vin", rec.VIN,
+			"action", rec.Action,
 			"state", rec.State,
 		)
 	}
 	s.mu.Unlock()
 	for _, rec := range changed {
 		s.notify(rec)
+	}
+	for _, next := range successors {
+		s.publishSuccessor(next)
 	}
 }
 
@@ -301,14 +365,34 @@ type wireCommand struct {
 
 func (s *Service) failPublish(rec *Record, err error) (Record, error) {
 	s.mu.Lock()
+	var next *Record
 	if rec.State == StatePending {
 		rec.State = StateFailed
-		delete(s.inFlight, flightKey(rec.VIN, rec.Action))
+		if s.inFlight[rec.VIN] == rec.ID {
+			next = s.promote(rec.VIN)
+		}
 	}
 	failed := *rec
 	s.mu.Unlock()
 	s.notify(failed)
+	s.publishSuccessor(next)
 	return failed, err
+}
+
+// promote moves the queued successor into in-flight. Caller holds s.mu.
+func (s *Service) promote(vin string) *Record {
+	delete(s.inFlight, vin)
+	queuedID, ok := s.queued[vin]
+	if !ok {
+		return nil
+	}
+	next := s.records[queuedID]
+	delete(s.queued, vin)
+	if next == nil {
+		return nil
+	}
+	s.inFlight[vin] = next.ID
+	return next
 }
 
 func (s *Service) notify(rec Record) {
@@ -320,12 +404,12 @@ func (s *Service) notify(rec Record) {
 	}
 }
 
-func idempotencyKey(vin, action, key string) string {
-	return vin + "\x00" + action + "\x00" + key
+func validAction(action string) bool {
+	return action == ActionUnlock || action == ActionLock
 }
 
-func flightKey(vin, action string) string {
-	return vin + "\x00" + action
+func idempotencyKey(vin, action, key string) string {
+	return vin + "\x00" + action + "\x00" + key
 }
 
 func randomID() string {

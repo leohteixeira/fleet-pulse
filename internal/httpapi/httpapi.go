@@ -1,4 +1,4 @@
-// Package httpapi serves the fleet snapshot, unlock commands, health check, and SSE stream.
+// Package httpapi serves the fleet snapshot, door commands, health check, and SSE stream.
 package httpapi
 
 import (
@@ -29,20 +29,21 @@ type HubPort interface {
 	Publish(Event)
 }
 
-// Unlocker is the unlock port declared by HTTP and implemented by the command machine.
+// Unlocker is the door-command port declared by HTTP and implemented by the command machine.
 type Unlocker interface {
 	Unlock(ctx context.Context, vin, key string) (command.Record, error)
+	Lock(ctx context.Context, vin, key string) (command.Record, error)
 	Get(id string) (command.Record, bool)
 }
 
-// Server is the stdlib HTTP surface for snapshot, unlock, health, and SSE.
+// Server is the stdlib HTTP surface for snapshot, lock/unlock, health, and SSE.
 type Server struct {
 	store    Store
 	hub      HubPort
 	unlocker Unlocker
 }
 
-// New wires consumer-owned store, hub, and unlock ports.
+// New wires consumer-owned store, hub, and command ports.
 func New(store Store, hub HubPort, unlocker Unlocker) *Server {
 	if hub == nil {
 		hub = NewHub()
@@ -50,11 +51,12 @@ func New(store Store, hub HubPort, unlocker Unlocker) *Server {
 	return &Server{store: store, hub: hub, unlocker: unlocker}
 }
 
-// Handler registers snapshot, unlock, command lookup, stream, and health routes.
+// Handler registers snapshot, lock, unlock, command lookup, stream, and health routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/vehicles", s.vehicles)
 	mux.HandleFunc("POST /api/vehicles/{vin}/unlock", s.unlock)
+	mux.HandleFunc("POST /api/vehicles/{vin}/lock", s.lock)
 	mux.HandleFunc("GET /api/commands/{id}", s.command)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	mux.HandleFunc("GET /healthz", s.healthz)
@@ -114,15 +116,31 @@ func (s *Server) unlock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	vin := r.PathValue("vin")
-	key := r.Header.Get("Idempotency-Key")
-	rec, err := s.unlocker.Unlock(r.Context(), vin, key)
-	if err != nil && rec.ID == "" {
-		s.writeUnlockError(w, err)
+	s.doorCommand(w, r, s.unlocker.Unlock)
+}
+
+func (s *Server) lock(w http.ResponseWriter, r *http.Request) {
+	if s.unlocker == nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	if err := writeJSON(w, http.StatusAccepted, unlockBody{ID: rec.ID, State: rec.State}); err != nil {
-		slog.Error("unlock response", "err", err)
+	s.doorCommand(w, r, s.unlocker.Lock)
+}
+
+func (s *Server) doorCommand(w http.ResponseWriter, r *http.Request, submit func(context.Context, string, string) (command.Record, error)) {
+	if submit == nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	vin := r.PathValue("vin")
+	key := r.Header.Get("Idempotency-Key")
+	rec, err := submit(r.Context(), vin, key)
+	if err != nil && rec.ID == "" {
+		s.writeCommandError(w, err)
+		return
+	}
+	if err := writeJSON(w, http.StatusAccepted, commandBody{ID: rec.ID, State: rec.State}); err != nil {
+		slog.Error("command response", "err", err)
 	}
 }
 
@@ -141,26 +159,26 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) writeUnlockError(w http.ResponseWriter, err error) {
+func (s *Server) writeCommandError(w http.ResponseWriter, err error) {
 	var conflict *command.ConflictError
 	switch {
-	case errors.Is(err, command.ErrMissingKey):
+	case errors.Is(err, command.ErrMissingKey), errors.Is(err, command.ErrUnknownAction):
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 	case errors.Is(err, command.ErrUnknownVIN):
 		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 	case errors.As(err, &conflict):
-		if writeErr := writeJSON(w, http.StatusConflict, unlockBody{
+		if writeErr := writeJSON(w, http.StatusConflict, commandBody{
 			ID:    conflict.Current.ID,
 			State: conflict.Current.State,
 		}); writeErr != nil {
-			slog.Error("unlock conflict", "err", writeErr)
+			slog.Error("command conflict", "err", writeErr)
 		}
 	default:
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }
 
-type unlockBody struct {
+type commandBody struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
 }

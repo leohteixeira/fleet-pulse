@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"time"
@@ -25,6 +26,10 @@ const (
 	CentroLng = -46.63
 	// OfflineVIN never connects and never publishes.
 	OfflineVIN = "FPULSESAO00000020"
+	// WanderVIN walks west across Centro's western edge over telemetry ticks.
+	WanderVIN   = "FPULSESAO00000002"
+	wanderStep  = 0.012
+	wanderFloor = -46.70
 )
 
 var models = []string{
@@ -56,6 +61,7 @@ type Vehicle struct {
 	Odometer  float64
 	Trip      float64
 	IsOffline bool
+	refuse    func() bool
 }
 
 type telemetry struct {
@@ -227,13 +233,7 @@ func runVehicle(ctx context.Context, addr string, v Vehicle, interval time.Durat
 }
 
 func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub publisher, cmds <-chan []byte) error {
-	payload, err := EncodeTelemetry(v)
-	if err != nil {
-		return err
-	}
-	topic := TelemetryTopic(v.VIN)
-
-	if err := pub.Publish(ctx, topic, payload); err != nil {
+	if err := publishTelemetry(ctx, v, pub); err != nil {
 		return err
 	}
 
@@ -244,32 +244,68 @@ func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub pub
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := pub.Publish(ctx, topic, payload); err != nil {
+			stepVehicle(&v)
+			if err := publishTelemetry(ctx, v, pub); err != nil {
 				return err
 			}
 		case cmd := <-cmds:
-			if err := ackCommand(ctx, v.VIN, cmd, pub); err != nil {
+			if err := ackCommand(ctx, &v, cmd, pub); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func ackCommand(ctx context.Context, vin string, payload []byte, pub publisher) error {
+func stepVehicle(v *Vehicle) {
+	if v.VIN != WanderVIN {
+		return
+	}
+	if v.Lng > wanderFloor {
+		v.Lng -= wanderStep
+	}
+}
+
+func publishTelemetry(ctx context.Context, v Vehicle, pub publisher) error {
+	payload, err := EncodeTelemetry(v)
+	if err != nil {
+		return err
+	}
+	return pub.Publish(ctx, TelemetryTopic(v.VIN), payload)
+}
+
+func (v Vehicle) rollRefuse() bool {
+	if v.refuse != nil {
+		return v.refuse()
+	}
+	return rand.IntN(10) == 0
+}
+
+func ackCommand(ctx context.Context, v *Vehicle, payload []byte, pub publisher) error {
 	var cmd struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Action string `json:"action"`
 	}
 	if err := json.Unmarshal(payload, &cmd); err != nil || cmd.ID == "" {
 		return nil
 	}
+	ok := !v.rollRefuse()
+	if ok {
+		switch cmd.Action {
+		case "lock":
+			v.Locked = true
+		case "unlock":
+			v.Locked = false
+		}
+		_ = publishTelemetry(ctx, *v, pub)
+	}
 	raw, err := json.Marshal(struct {
 		CommandID string `json:"commandId"`
 		OK        bool   `json:"ok"`
-	}{CommandID: cmd.ID, OK: true})
+	}{CommandID: cmd.ID, OK: ok})
 	if err != nil {
 		return fmt.Errorf("encode ack: %w", err)
 	}
-	return pub.Publish(ctx, AckTopic(vin), raw)
+	return pub.Publish(ctx, AckTopic(v.VIN), raw)
 }
 
 func plate(i int) string {

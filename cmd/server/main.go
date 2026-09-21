@@ -171,12 +171,30 @@ func (s telemetrySink) Apply(t ingest.Telemetry) {
 		Odometer:  t.Odometer,
 		Trip:      t.Trip,
 	}
-	s.mem.Apply(v)
+	exit, crossed := s.mem.Apply(v)
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
 	s.hub.Publish(httpapi.Event{Name: "telemetry", Data: data})
+	if !crossed {
+		return
+	}
+	payload, err := json.Marshal(struct {
+		VIN       string  `json:"vin"`
+		DisplayID string  `json:"displayId"`
+		Lat       float64 `json:"lat"`
+		Lng       float64 `json:"lng"`
+	}{
+		VIN:       exit.VIN,
+		DisplayID: exit.DisplayID,
+		Lat:       exit.Lat,
+		Lng:       exit.Lng,
+	})
+	if err != nil {
+		return
+	}
+	s.hub.Publish(httpapi.Event{Name: "area-exit", Data: payload})
 }
 
 func rosterFromSim(fleet []sim.Vehicle) []store.Vehicle {
