@@ -3,11 +3,35 @@ info:
   title: Fleet Pulse
   version: 0.1.0
   description: >
-    Single-process fleet simulator. Six HTTP endpoints plus an embedded SPA.
+    Single-process fleet simulator. HTTP endpoints plus an embedded SPA.
     No authentication. Last-known rental state is persisted in PostgreSQL.
+    The leasing book is read-only on GET /api/contracts; calendar rate is
+    environment-only (CALENDAR_RATE).
 servers:
   - url: http://127.0.0.1:8300
 paths:
+  /api/clock:
+    get:
+      summary: Simulated calendar
+      operationId: getClock
+      responses:
+        '200':
+          description: Simulated date, rate (and ×N), and real time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Clock'
+  /api/contracts:
+    get:
+      summary: Active leasing book
+      operationId: getContracts
+      responses:
+        '200':
+          description: Active contracts with days late and overdue band
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractList'
   /api/vehicles:
     get:
       summary: Fleet snapshot
@@ -177,3 +201,35 @@ components:
     CommandState:
       type: string
       enum: [PENDING, SENT, ACKED, FAILED, TIMEOUT]
+    Clock:
+      type: object
+      required: [simulated, real, rate, multiplier]
+      properties:
+        simulated: { type: string, format: date-time }
+        real: { type: string, format: date-time }
+        rate:
+          type: string
+          enum: [1h/s, 4h/s, 12h/s]
+        multiplier: { type: integer }
+    ContractList:
+      type: object
+      required: [contracts]
+      properties:
+        contracts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contract'
+    Contract:
+      type: object
+      required: [id, vin, clientName, payerProfile, daysLate, overdueBand]
+      properties:
+        id: { type: string }
+        vin: { type: string }
+        clientName: { type: string }
+        payerProfile:
+          type: string
+          enum: [pontual, atrasa_ocasionalmente, regulariza_apos_notificacao, inadimplente]
+        daysLate: { type: integer }
+        overdueBand:
+          type: string
+          enum: [em_dia, 1_15, 16_30, acima_30]

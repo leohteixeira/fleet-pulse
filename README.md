@@ -57,13 +57,21 @@ flowchart LR
 ```
 
 The HTTP contract is in [`openapi.yaml`](openapi.yaml): snapshot, SSE stream,
-unlock, lock, command lookup, and `healthz`.
+unlock, lock, command lookup, `GET /api/clock`, `GET /api/contracts`, and
+`healthz`.
 
 Motion follows a **committed Greater São Paulo route library**
 (`internal/routes/seed.json`, ~60 POIs and ~300 routes), embedded with
 `go:embed`. The running process never calls OSRM, Overpass, or any external
 router. Rebuild the seed offline with `go run ./scripts/seedroutes`. Set
-`SIM_SEED` to replay the same first-route assignment.
+`SIM_SEED` to replay the same first-route assignment and the same first
+leasing-book profile mix. `CALENDAR_RATE` is environment-only (`1h/s`,
+`4h/s` default / ×14400, `12h/s`). Invalid or missing values become `4h/s`.
+There is no HTTP or UI control that changes the rate. Telemetry timestamps
+stay real time. `GET /api/clock` reports the simulated instant, the rate,
+and wall-clock time. `GET /api/contracts` lists the active 40–60 leasing
+book (days late, overdue band, payer profile). Write routes for notify,
+block, and pay are not in this release.
 
 Rental vehicles still own the Centro geofence and the west-exit demo VIN.
 The Centro OSM extract (`internal/roads/centro.json`) stays for that snap;
