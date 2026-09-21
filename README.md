@@ -36,7 +36,7 @@ flowchart LR
     Store["Postgres store\n+ vehicle_state cache"]
     Ingest["MQTT ingest"]
     Broker["mochi-mqtt v2\n:1883"]
-    Sim["simulator\n15–25 MQTT clients"]
+    Sim["simulator\n20 rental + ~50 leasing"]
     UI["embedded web\ngo:embed"]
   end
   PG["PostgreSQL"]
@@ -50,7 +50,7 @@ flowchart LR
   Store -->|crossing| SSE
   Store --> SSE
   SSE --> Browser
-  Sim -->|fleet/vin/telemetry\nfleet/vin/ack| Broker
+  Sim -->|fleet/vin and leasing/vin| Broker
   Broker --> Ingest
   HTTP -->|fleet/vin/commands| Broker
   Broker --> Sim
@@ -59,9 +59,17 @@ flowchart LR
 The HTTP contract is in [`openapi.yaml`](openapi.yaml): snapshot, SSE stream,
 unlock, lock, command lookup, and `healthz`.
 
-Simulated vehicles walk a **static OSM extract** of Centro and a west corridor
-(`internal/roads/centro.json`), embedded with `go:embed`. The running process
-never calls Overpass. Regenerate the file with `go run ./scripts/fetchroads`.
+Motion follows a **committed Greater São Paulo route library**
+(`internal/routes/seed.json`, ~60 POIs and ~300 routes), embedded with
+`go:embed`. The running process never calls OSRM, Overpass, or any external
+router. Rebuild the seed offline with `go run ./scripts/seedroutes`. Set
+`SIM_SEED` to replay the same first-route assignment.
+
+Rental vehicles still own the Centro geofence and the west-exit demo VIN.
+The Centro OSM extract (`internal/roads/centro.json`) stays for that snap;
+regenerate it with `go run ./scripts/fetchroads`. Leasing devices publish as
+real MQTT clients on `leasing/{vin}/telemetry|ack` and are never seeded into
+`GET /api/vehicles`.
 
 ## Trade-offs
 
