@@ -1,2 +1,9 @@
 # Generated BMad skill render snapshots
 _bmad/render/
+
+# Go binaries, coverage, and local build artifacts
+bin/
+/server
+*.test
+coverage.out
+.gotmp/
