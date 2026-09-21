@@ -65,6 +65,7 @@ broker.
 
 ```text
 pnpm --dir web install --frozen-lockfile
+lefthook install
 pnpm --dir web test
 pnpm --dir web build
 cp -r web/dist/. internal/webui/dist/
@@ -74,3 +75,20 @@ GOTMPDIR="$PWD/.gotmp" go test -race ./...
 
 `go:embed` reads `internal/webui/dist`. Rebuild the UI and copy it there before
 shipping a binary that serves a new frontend.
+
+## Continuous integration
+
+GitHub Actions runs on every pull request and on pushes to `main`. The workflow
+is [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+1. **Secret scanning** — gitleaks over the full git history.
+2. **Web application** — `pnpm --dir web install --frozen-lockfile`, then test
+   and build (the build already typechecks).
+3. **Go module** — `go mod tidy` must be clean, then `gofmt`, `go vet`,
+   `go build`, and `go test -race -shuffle=on`.
+
+The shipping copy of `web/dist` into `internal/webui/dist` is not a CI gate;
+Go tests use the already-committed embed artifacts.
+
+The lefthook `pre-push` hook runs the same gate locally (gitleaks, Go, web)
+before the push reaches GitHub. Install it with `lefthook install`.
