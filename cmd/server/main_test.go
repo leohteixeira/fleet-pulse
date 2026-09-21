@@ -10,6 +10,23 @@ import (
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
 
+func TestRequireDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	if _, err := requireDatabaseURL(); err == nil {
+		t.Fatal("empty DATABASE_URL: expected error")
+	}
+
+	const want = "postgres://fleetpulse:fleetpulse@127.0.0.1:5435/fleetpulse?sslmode=disable"
+	t.Setenv("DATABASE_URL", "  "+want+"  ")
+	got, err := requireDatabaseURL()
+	if err != nil {
+		t.Fatalf("DATABASE_URL set: %v", err)
+	}
+	if got != want {
+		t.Fatalf("dsn = %q, want %q", got, want)
+	}
+}
+
 func TestReadySub_SignalsAfterN(t *testing.T) {
 	t.Parallel()
 
@@ -43,20 +60,23 @@ func TestOrderlyShutdown_DrainsSSEFirst(t *testing.T) {
 	httpDone := make(chan struct{})
 	close(httpDone)
 	err := orderlyShutdown(shutdownHooks{
-		drain:    func() { order = append(order, "drain") },
-		stopHTTP: func() { order = append(order, "http") },
-		httpDone: httpDone,
-		stopSim:  func() { order = append(order, "sim") },
-		wait:     func() { order = append(order, "wait") },
+		drain:      func() { order = append(order, "drain") },
+		stopHTTP:   func() { order = append(order, "http") },
+		httpDone:   httpDone,
+		stopSim:    func() { order = append(order, "sim") },
+		flushRelay: func() { order = append(order, "flush") },
+		stopRelay:  func() { order = append(order, "relay") },
+		wait:       func() { order = append(order, "wait") },
 		closeBro: func() error {
 			order = append(order, "broker")
 			return nil
 		},
+		closePool: func() { order = append(order, "pool") },
 	})
 	if err != nil {
 		t.Fatalf("orderlyShutdown() error = %v", err)
 	}
-	want := []string{"drain", "http", "sim", "wait", "broker"}
+	want := []string{"drain", "http", "sim", "flush", "relay", "wait", "broker", "pool"}
 	if len(order) != len(want) {
 		t.Fatalf("order = %v, want %v", order, want)
 	}
@@ -80,7 +100,10 @@ func TestTelemetrySink_Apply(t *testing.T) {
 
 	mem := store.New()
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 
 	const vin = "FPULSESAO00000001"
@@ -102,6 +125,9 @@ func TestTelemetrySink_Apply(t *testing.T) {
 	case ev := <-events:
 		if ev.Name != "telemetry" {
 			t.Fatalf("event name = %q, want telemetry", ev.Name)
+		}
+		if ev.Fleet != httpapi.FleetRental {
+			t.Fatalf("event fleet = %q, want %s", ev.Fleet, httpapi.FleetRental)
 		}
 		var body struct {
 			VIN string `json:"vin"`
@@ -128,7 +154,10 @@ func TestTelemetrySink_AreaExit(t *testing.T) {
 		Lng:       -46.63,
 	}})
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 
 	telemetrySink{mem: mem, hub: hub}.Apply(ingest.Telemetry{
@@ -143,6 +172,9 @@ func TestTelemetrySink_AreaExit(t *testing.T) {
 	for range 2 {
 		select {
 		case ev := <-events:
+			if ev.Fleet != httpapi.FleetRental {
+				t.Fatalf("event fleet = %q, want %s", ev.Fleet, httpapi.FleetRental)
+			}
 			switch ev.Name {
 			case "telemetry":
 				gotTel = true

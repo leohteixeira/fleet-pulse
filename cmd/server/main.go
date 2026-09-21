@@ -9,13 +9,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
+	"github.com/leohteixeira/fleet-pulse/internal/book"
 	"github.com/leohteixeira/fleet-pulse/internal/broker"
+	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
+	"github.com/leohteixeira/fleet-pulse/internal/outbox"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
@@ -23,14 +29,37 @@ import (
 const defaultBindAddr = "0.0.0.0:1883"
 
 var (
-	_ ingest.Subscriber = (*broker.Broker)(nil)
-	_ ingest.Sink       = telemetrySink{}
-	_ ingest.AckSink    = (*command.Service)(nil)
-	_ httpapi.Store     = (*store.Memory)(nil)
-	_ httpapi.Unlocker  = (*command.Service)(nil)
-	_ command.Publisher = (*broker.Broker)(nil)
-	_ command.Vehicles  = (*store.Memory)(nil)
+	_ ingest.Subscriber       = (*broker.Broker)(nil)
+	_ ingest.Sink             = telemetrySink{}
+	_ ingest.Sink             = leasingTelem{}
+	_ ingest.AckSink          = (*command.Service)(nil)
+	_ ingest.AckSink          = leasingAck{}
+	_ httpapi.Store           = (*store.Postgres)(nil)
+	_ httpapi.Ready           = (*store.Postgres)(nil)
+	_ httpapi.Unlocker        = (*command.Service)(nil)
+	_ httpapi.Clock           = (*clock.Clock)(nil)
+	_ httpapi.Contracts       = (*book.Book)(nil)
+	_ command.Publisher       = (*broker.Broker)(nil)
+	_ command.Vehicles        = (*store.Postgres)(nil)
+	_ block.Store             = (*store.Postgres)(nil)
+	_ outbox.Store            = (*store.Postgres)(nil)
+	_ outbox.Publisher        = (*broker.Broker)(nil)
+	_ httpapi.LeasingCommands = (*block.Service)(nil)
+	_ httpapi.Blocker         = (*block.Service)(nil)
+	_ httpapi.Roster          = (*store.Postgres)(nil)
+	_ book.Unblocker          = (*block.Service)(nil)
+	_ block.Calendar          = (*clock.Clock)(nil)
 )
+
+var errDatabaseURLRequired = errors.New("database_url is required")
+
+func requireDatabaseURL() (string, error) {
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		return "", errDatabaseURLRequired
+	}
+	return dsn, nil
+}
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -46,30 +75,62 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	dsn, err := requireDatabaseURL()
+	if err != nil {
+		return err
+	}
+	pg, err := store.Open(ctx, dsn, log)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer pg.Close()
+	pg.Seed(rosterFromSim(sim.NewFleet()))
+
+	clk := clock.FromEnv()
+	bk := book.New(pg, clk, log)
+	if err := bk.Seed(ctx); err != nil {
+		return fmt.Errorf("seed book: %w", err)
+	}
+
 	b := broker.New(defaultBindAddr, log)
 	if err := b.Start(ctx); err != nil {
 		return fmt.Errorf("start broker: %w", err)
 	}
 
-	mem := store.New()
-	mem.Seed(rosterFromSim(sim.NewFleet()))
 	hub := httpapi.NewHub()
-	sink := telemetrySink{mem: mem, hub: hub}
-	cmds := command.New(b, mem, log)
+	sink := telemetrySink{mem: pg, hub: hub}
+	cmds := command.New(b, pg, log)
 	cmds.SetListener(func(rec command.Record) {
 		data, err := json.Marshal(rec)
 		if err != nil {
 			return
 		}
-		hub.Publish(httpapi.Event{Name: "command", Data: data})
+		hub.Publish(httpapi.Event{Name: "command", Data: data, Fleet: httpapi.FleetRental})
 	})
+	blocks := block.New(pg, log, block.WithCalendar(clk))
+	bk.SetUnblocker(blocks)
+	blocks.SetListener(func(rec block.Record) {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return
+		}
+		hub.Publish(httpapi.Event{Name: "command", Data: data, Fleet: httpapi.FleetLeasing})
+	})
+	if err := blocks.Load(ctx); err != nil {
+		_ = b.Close()
+		return fmt.Errorf("load leasing commands: %w", err)
+	}
+	relay := outbox.New(pg, b, log)
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 4)
-	ready := newReadySub(b, 2)
+	errCh := make(chan error, 6)
+	ready := newReadySub(b, 4)
 
 	wg.Go(func() {
-		if err := ingest.Run(ctx, ready, sink, cmds, log); err != nil && !errors.Is(err, context.Canceled) {
+		if err := ingest.Run(ctx, ready, sink, cmds, log, ingest.WithLeasing(
+			leasingTelem{svc: blocks, hub: hub},
+			leasingAck{svc: blocks},
+		)); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("ingest: %w", err)
 		}
 	})
@@ -81,7 +142,20 @@ func run(log *slog.Logger) error {
 
 	httpCtx, stopHTTP := context.WithCancel(context.Background())
 	simCtx, stopSim := context.WithCancel(context.Background())
-	handler := httpapi.New(mem, hub, cmds).Handler()
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	handler := httpapi.New(
+		pg,
+		hub,
+		cmds,
+		pg,
+		httpapi.WithClock(clk),
+		httpapi.WithContracts(bk),
+		httpapi.WithLeasingCommands(blocks),
+		httpapi.WithBlocks(blocks),
+		httpapi.WithRoster(pg),
+		httpapi.WithIdempotency(httpapi.KeysFromStore(pg)),
+		httpapi.WithAuditHash(os.Getenv(httpapi.EnvAuditHashSecret), trustForwarded()),
+	).Handler()
 	httpDone := make(chan struct{})
 	wg.Go(func() {
 		defer close(httpDone)
@@ -91,6 +165,18 @@ func run(log *slog.Logger) error {
 	})
 	wg.Go(func() {
 		cmds.RunExpiry(simCtx)
+	})
+	wg.Go(func() {
+		bk.Run(ctx)
+	})
+	wg.Go(func() {
+		blocks.Run(ctx)
+	})
+	wg.Go(func() {
+		relay.Run(relayCtx)
+	})
+	wg.Go(func() {
+		pg.RunRetention(ctx)
 	})
 
 	wg.Go(func() {
@@ -112,8 +198,17 @@ func run(log *slog.Logger) error {
 		stopHTTP: stopHTTP,
 		httpDone: httpDone,
 		stopSim:  stopSim,
-		wait:     wg.Wait,
-		closeBro: b.Close,
+		flushRelay: func() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := relay.Flush(flushCtx); err != nil {
+				log.Error("outbox flush failed", "err", err)
+			}
+		},
+		stopRelay: stopRelay,
+		wait:      wg.Wait,
+		closeBro:  b.Close,
+		closePool: pg.Close,
 	})
 	for {
 		select {
@@ -126,12 +221,15 @@ func run(log *slog.Logger) error {
 }
 
 type shutdownHooks struct {
-	drain    func()
-	stopHTTP func()
-	httpDone <-chan struct{}
-	stopSim  func()
-	wait     func()
-	closeBro func() error
+	drain      func()
+	stopHTTP   func()
+	httpDone   <-chan struct{}
+	stopSim    func()
+	flushRelay func()
+	stopRelay  func()
+	wait       func()
+	closeBro   func() error
+	closePool  func()
 }
 
 func orderlyShutdown(h shutdownHooks) error {
@@ -147,16 +245,25 @@ func orderlyShutdown(h shutdownHooks) error {
 	if h.stopSim != nil {
 		h.stopSim()
 	}
+	if h.flushRelay != nil {
+		h.flushRelay()
+	}
+	if h.stopRelay != nil {
+		h.stopRelay()
+	}
 	if h.wait != nil {
 		h.wait()
 	}
-	if h.closeBro == nil {
-		return nil
+	var broErr error
+	if h.closeBro != nil {
+		if err := h.closeBro(); err != nil {
+			broErr = fmt.Errorf("close broker: %w", err)
+		}
 	}
-	if err := h.closeBro(); err != nil {
-		return fmt.Errorf("close broker: %w", err)
+	if h.closePool != nil {
+		h.closePool()
 	}
-	return nil
+	return broErr
 }
 
 type readySub struct {
@@ -192,8 +299,12 @@ func (s *readySub) Subscribe(ctx context.Context, filter string, handler ingest.
 	return nil
 }
 
+type fleetApply interface {
+	Apply(store.Vehicle) (store.Vehicle, bool)
+}
+
 type telemetrySink struct {
-	mem *store.Memory
+	mem fleetApply
 	hub *httpapi.Hub
 }
 
@@ -218,7 +329,7 @@ func (s telemetrySink) Apply(t ingest.Telemetry) {
 	if err != nil {
 		return
 	}
-	s.hub.Publish(httpapi.Event{Name: "telemetry", Data: data})
+	s.hub.Publish(httpapi.Event{Name: "telemetry", Data: data, Fleet: httpapi.FleetRental})
 	if !crossed {
 		return
 	}
@@ -236,7 +347,75 @@ func (s telemetrySink) Apply(t ingest.Telemetry) {
 	if err != nil {
 		return
 	}
-	s.hub.Publish(httpapi.Event{Name: "area-exit", Data: payload})
+	s.hub.Publish(httpapi.Event{Name: "area-exit", Data: payload, Fleet: httpapi.FleetRental})
+}
+
+func trustForwarded() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(httpapi.EnvTrustForwarded))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+type leasingTelem struct {
+	svc *block.Service
+	hub *httpapi.Hub
+}
+
+func (l leasingTelem) Apply(t ingest.Telemetry) {
+	if l.svc != nil {
+		l.svc.NoteTelem(block.LastKnown{
+			VIN:       t.VIN,
+			Speed:     t.Speed,
+			Ignition:  t.Ignition,
+			Lat:       t.Lat,
+			Lng:       t.Lng,
+			Battery:   t.Battery,
+			Heading:   t.Heading,
+			Locked:    t.Locked,
+			Odometer:  t.Odometer,
+			Trip:      t.Trip,
+			Plate:     t.Plate,
+			Model:     t.Model,
+			DisplayID: t.DisplayID,
+		})
+	}
+	if l.hub == nil {
+		return
+	}
+	v := store.Vehicle{
+		VIN:       t.VIN,
+		DisplayID: t.DisplayID,
+		Lat:       t.Lat,
+		Lng:       t.Lng,
+		Plate:     t.Plate,
+		Model:     t.Model,
+		Battery:   t.Battery,
+		Speed:     t.Speed,
+		Heading:   t.Heading,
+		Ignition:  t.Ignition,
+		Locked:    t.Locked,
+		Odometer:  t.Odometer,
+		Trip:      t.Trip,
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	l.hub.Publish(httpapi.Event{Name: "telemetry", Data: data, Fleet: httpapi.FleetLeasing})
+}
+
+type leasingAck struct {
+	svc *block.Service
+}
+
+func (l leasingAck) Apply(commandID string, ok bool) {
+	if l.svc == nil {
+		return
+	}
+	l.svc.ApplyAck(commandID, ok)
 }
 
 func rosterFromSim(fleet []sim.Vehicle) []store.Vehicle {

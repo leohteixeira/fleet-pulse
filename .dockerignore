@@ -1,0 +1,13 @@
+.git
+.github
+.gotmp
+_bmad
+_bmad-output
+bin
+coverage.out
+*.test
+.env
+.env.*
+web/node_modules
+web/dist
+docs

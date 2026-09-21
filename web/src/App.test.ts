@@ -112,7 +112,7 @@ describe('connectTelemetry', () => {
         created = this;
       }
     });
-    expect(created?.url).toBe('/api/stream');
+    expect(created?.url).toBe('/api/stream?fleet=rental');
 
     const before = state;
     created?.emit('message', JSON.stringify({ vin: 'FPULSESAO00000001', lat: -23.5, lng: -46.6 }));

@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--bg-0:#0B0E13;--bg-1:#11151C;--bg-2:#181D26;--bg-3:#1F2632;--line:#232A36;--line-soft:#1A2029;--line-strong:#3A4353;--text-1:#E6EAF0;--text-2:#8B95A5;--text-3:#5B6472;--accent:#3B82F6;--accent-hover:#2F6FDD;--accent-dim:#2A5DB8;--accent-soft:rgba(59,130,246,.08);--ok:#34D399;--warn:#F59E0B;--err:#EF4444;--err-hover:#DC2626;--v-in-use:#C7CFDB;--v-offline:#2A313D;--overlay:rgba(17,21,28,.92);--chip:rgba(11,14,19,.9);--chip-border:rgba(255,255,255,.1);--glass:rgba(11,14,19,.55);--late-1:#F59E0B;--late-2:#F97316;--late-3:#EF4444;--warn-soft:rgba(245,158,11,.12);--err-soft:rgba(239,68,68,.12);--ok-soft:rgba(52,211,153,.12);--panel-w:380px}
+:root[data-theme="light"]{--bg-0:#E9ECF0;--bg-1:#FFFFFF;--bg-2:#F3F5F8;--bg-3:#E8EBF0;--line:#D5DAE2;--line-soft:#E9ECF1;--line-strong:#B8C0CC;--text-1:#141820;--text-2:#5B6472;--text-3:#6B7585;--accent:#2563EB;--accent-hover:#1D4ED8;--accent-dim:#6D9BF0;--ok:#059669;--warn:#B45309;--err:#DC2626;--err-hover:#B91C1C;--v-in-use:#3F4A5C;--v-offline:#C9CFD8;--overlay:rgba(255,255,255,.92);--chip:rgba(255,255,255,.94);--chip-border:rgba(0,0,0,.14);--glass:rgba(255,255,255,.6);--late-1:#B45309;--late-2:#C2410C;--late-3:#DC2626}
+html,body{margin:0;height:100%;background:var(--bg-0);color:var(--text-1);font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{color:#6FA3F8;text-decoration:underline}
+button,input,select,textarea{font-family:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed}
+input::placeholder,textarea::placeholder{color:var(--text-3)}
+.leaflet-div-icon{background:transparent;border:0}
+.leaflet-container{background:var(--bg-0);font-family:inherit}
+.leaflet-control-attribution{background:var(--overlay)!important;color:var(--text-3)!important;font-size:10px!important}
+.leaflet-control-attribution a{color:var(--text-2)!important}
+.leaflet-bar a{background:var(--bg-1)!important;color:var(--text-1)!important;border-color:var(--line)!important}
+@keyframes fp-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes fp-breathe{0%,100%{opacity:.35;transform:scale(.94)}50%{opacity:1;transform:scale(1)}}
+@keyframes fp-ring{0%{box-shadow:0 0 0 0 rgba(59,130,246,.6)}100%{box-shadow:0 0 0 10px rgba(59,130,246,0)}}
+@keyframes fp-ok{0%{background:rgba(52,211,153,.35)}100%{background:rgba(52,211,153,0)}}
+@keyframes fp-err{0%{background:rgba(239,68,68,.35)}100%{background:rgba(239,68,68,0)}}
+@keyframes fp-spin{to{transform:rotate(360deg)}}
+@keyframes fp-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.fp-live{animation:fp-pulse 1.6s ease-in-out infinite}
+.fp-armed{animation:fp-breathe 2.4s ease-in-out infinite}
+.fp-spin{animation:fp-spin .8s linear infinite}
+.fp-pending{animation:fp-ring 1.2s ease-out infinite}
+.fp-flash-ok{animation:fp-ok 1.6s ease-out forwards}
+.fp-flash-err{animation:fp-err 1.6s ease-out forwards}
+.fp-row-in{animation:fp-in .25s ease-out}
+</style>
+</helmet>
+<div data-screen-label="Carteira" style="display:grid;grid-template-rows:44px 56px 40px minmax(0,1fr);height:100vh;min-height:800px;min-width:1280px;background:var(--bg-0);color:var(--text-1);font-size:13px">
+  <header style="display:flex;align-items:center;border-bottom:1px solid var(--line);background:var(--bg-1);padding:0 16px;min-width:0;white-space:nowrap">
+    <div style="display:flex;align-items:center;gap:10px;padding-right:20px;border-right:1px solid var(--line);height:100%">
+      <span style="width:8px;height:8px;background:var(--accent);border-radius:1px"></span>
+      <span style="font-weight:600;letter-spacing:.08em;font-size:12px">FLEET PULSE</span>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">SP · cobrança</span>
+    </div>
+    <nav style="display:flex;align-items:stretch;height:100%;border-right:1px solid var(--line)">
+      <a href="Fleet Pulse.dc.html" style="display:flex;align-items:center;padding:0 16px;color:var(--text-2);font-size:12.5px;font-weight:500;border-bottom:2px solid transparent;box-sizing:border-box" style-hover="color:var(--text-1);text-decoration:none">Frota</a>
+      <span style="display:flex;align-items:center;padding:0 16px;color:var(--text-1);font-size:12.5px;font-weight:500;border-bottom:2px solid var(--accent);box-sizing:border-box">Carteira</span>
+    </nav>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:14px">
+      <div title="Data real: {{ realDate }}" style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;line-height:1;padding-right:14px;border-right:1px solid var(--line)">
+        <span style="display:flex;align-items:center;gap:6px;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);font-weight:600"><span style="width:5px;height:5px;border:1px dashed var(--warn);border-radius:50%;box-sizing:border-box"></span>Data simulada · {{ simSpeedLabel }}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--text-1)">{{ simDate }}</span>
+      </div>
+      <div style="position:relative;display:flex;padding:2px;gap:2px;border:1px solid var(--line);border-radius:2px;background:var(--bg-2)">
+        <span style="position:absolute;top:2px;bottom:2px;width:26px;left:{{ knobLeft }};background:var(--text-1);border-radius:2px;transition:left .18s ease"></span>
+        <button onClick="{{ setLight }}" title="Tema claro" style="position:relative;width:26px;height:22px;border:0;background:none;padding:0;display:flex;align-items:center;justify-content:center;color:{{ lightFg }}">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="2.6"></circle><path d="M7 1v1.6M7 11.4V13M1 7h1.6M11.4 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M2.8 11.2l1.1-1.1M10.1 3.9l1.1-1.1"></path></svg>
+        </button>
+        <button onClick="{{ setDark }}" title="Tema escuro" style="position:relative;width:26px;height:22px;border:0;background:none;padding:0;display:flex;align-items:center;justify-content:center;color:{{ darkFg }}">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M11.5 8.6A5 5 0 0 1 5.4 2.5a5 5 0 1 0 6.1 6.1z"></path></svg>
+        </button>
+      </div>
+      <sc-if value="{{ online }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid var(--line);border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-2)">
+          <span class="fp-live" style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></span>
+          <span>STREAM · AO VIVO</span>
+          <span style="color:var(--text-3)">{{ clock }}</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{ reconnecting }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid rgba(245,158,11,.5);background:var(--warn-soft);border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--warn)">
+          <span class="fp-spin" style="width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(245,158,11,.3);border-top-color:var(--warn)"></span>
+          <span>STREAM CAIU · RECONECTANDO {{ retryLabel }}</span>
+        </div>
+      </sc-if>
+      <a href="Fleet Pulse Carteira Spec.dc.html" style="font-size:10.5px;color:var(--text-3);letter-spacing:.08em;padding-left:2px" style-hover="color:var(--text-1);text-decoration:none">SPEC →</a>
+    </div>
+  </header>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) var(--panel-w);border-bottom:1px solid var(--line);background:var(--bg-1)">
+    <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="4">
+      <div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 16px;border-right:1px solid var(--line);min-width:0;white-space:nowrap;overflow:hidden">
+        <span style="display:flex;align-items:center;gap:6px;color:var(--text-2);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em"><span style="width:6px;height:6px;border-radius:1px;background:{{ k.color }}"></span>{{ k.label }}</span>
+        <span style="display:flex;align-items:baseline;gap:8px"><span style="font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;color:{{ k.valueColor }}">{{ k.value }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">{{ k.sub }}</span></span>
+      </div>
+    </sc-for>
+    <div style="display:flex;align-items:center;padding:0 16px;color:var(--text-3);font-size:11.5px;line-height:1.4">Bloqueio só é efetivado com o veículo parado e ignição desligada.</div>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--bg-1);min-width:0;white-space:nowrap">
+    <span style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Atraso</span>
+    <div style="display:flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:2px;background:var(--bg-2)">
+      <sc-for list="{{ bandChips }}" as="b" hint-placeholder-count="5">
+        <button onClick="{{ b.click }}" style="display:flex;align-items:center;gap:6px;height:24px;padding:0 10px;border:0;border-radius:2px;background:{{ b.bg }};color:{{ b.fg }};font-size:12px;font-weight:500" style-hover="color:var(--text-1)">
+          <span style="width:6px;height:6px;border-radius:1px;background:{{ b.dot }}"></span>{{ b.label }}
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ b.countColor }};font-variant-numeric:tabular-nums">{{ b.count }}</span>
+        </button>
+      </sc-for>
+    </div>
+    <span style="width:1px;height:20px;background:var(--line)"></span>
+    <span style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Veículo</span>
+    <select value="{{ vsFilter }}" onChange="{{ setVs }}" style="height:28px;padding:0 8px;border:1px solid var(--line);border-radius:2px;background:var(--bg-2);color:var(--text-1);font-size:12px">
+      <option value="all">Todos</option>
+      <option value="ativo">Ativo</option>
+      <option value="armado">Bloqueio armado</option>
+      <option value="bloqueado">Bloqueado</option>
+      <option value="desbloqueio_pendente">Desbloqueio pendente</option>
+    </select>
+    <span style="width:1px;height:20px;background:var(--line)"></span>
+    <input value="{{ q }}" onChange="{{ setQ }}" placeholder="Placa ou cliente" style="height:28px;width:220px;padding:0 10px;border:1px solid var(--line);border-radius:2px;background:var(--bg-2);color:var(--text-1);font-size:12px;outline:none" style-focus="border-color:var(--accent)">
+    <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums">{{ visibleCount }} de {{ totalCount }} contratos</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) var(--panel-w);min-height:0;min-width:0">
+    <div style="display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,52%) minmax(0,48%);min-height:0;min-width:0">
+      <div style="position:relative;min-height:0;border-bottom:1px solid var(--line)">
+        <div ref="{{ mapRef }}" style="position:absolute;inset:0"></div>
+        <sc-if value="{{ reconnecting }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;left:0;right:0;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--warn) 0 12px,transparent 12px 20px);z-index:500"></div>
+          <div style="position:absolute;left:12px;top:12px;z-index:500;padding:6px 10px;background:var(--overlay);border:1px solid rgba(245,158,11,.5);border-radius:2px;font-size:11.5px;color:var(--warn)">Posições congeladas · último dado {{ staleLabel }}</div>
+        </sc-if>
+        <div style="position:absolute;left:12px;bottom:12px;z-index:500;display:flex;gap:12px;padding:6px 10px;background:var(--overlay);border:1px solid var(--line);border-radius:2px;font-size:11px;color:var(--text-2)">
+          <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--v-in-use);border-radius:1px"></span>Ativo</span>
+          <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border:1.5px dashed var(--warn);border-radius:50%;box-sizing:border-box"></span>Bloqueio armado</span>
+          <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--err);border-radius:1px"></span>Bloqueado</span>
+          <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border:1px dashed var(--err);border-radius:1px;box-sizing:border-box"></span>Desbloqueio pendente</span>
+          <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--v-offline);border:1px dashed var(--text-3);border-radius:1px;box-sizing:border-box"></span>Offline</span>
+          <span style="color:var(--text-3)">etiqueta: contrato · dias em atraso</span>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;background:var(--bg-0)">
+        <div style="display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(140px,1.2fr) 96px 88px 96px 150px 118px;gap:10px;padding:0 16px 0 14px;height:30px;align-items:center;border-bottom:1px solid var(--line);background:var(--bg-1);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">
+          <span>Cliente</span><span>Placa · modelo</span><span style="text-align:right">Parcela</span><span>Próx. venc.</span><span>Atraso</span><span>Veículo</span><span>Sinal</span>
+        </div>
+        <div ref="{{ tableRef }}" style="flex:1;overflow:auto;min-height:0">
+          <sc-for list="{{ rows }}" as="r" hint-placeholder-count="12">
+            <div onClick="{{ r.select }}" style="display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(140px,1.2fr) 96px 88px 96px 150px 118px;gap:10px;padding:0 16px 0 12px;height:32px;align-items:center;border-bottom:1px solid var(--line-soft);border-left:2px solid {{ r.bar }};background:{{ r.bg }};cursor:pointer;font-size:12.5px" style-hover="background:var(--bg-2)">
+              <span style="display:flex;align-items:center;gap:8px;min-width:0"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">{{ r.id }}</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ r.clientColor }}">{{ r.client }}</span></span>
+              <span style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="font-family:'IBM Plex Mono',monospace;font-weight:500">{{ r.plate }}</span><span style="color:var(--text-2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.model }}</span></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-variant-numeric:tabular-nums;text-align:right">{{ r.inst }}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-variant-numeric:tabular-nums;color:{{ r.dueColor }}">{{ r.due }}</span>
+              <span style="display:flex;align-items:center;gap:8px">
+                <span style="display:flex;gap:2px"><span style="width:5px;height:12px;background:{{ r.s1 }};border-radius:1px"></span><span style="width:5px;height:12px;background:{{ r.s2 }};border-radius:1px"></span><span style="width:5px;height:12px;background:{{ r.s3 }};border-radius:1px"></span></span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:{{ r.lateWeight }};font-variant-numeric:tabular-nums;color:{{ r.lateColor }}">{{ r.late }}</span>
+              </span>
+              <span style="display:flex;align-items:center;gap:8px;min-width:0">
+                <span style="display:inline-flex;align-items:center;gap:6px;padding:2px 7px;border-radius:2px;font-size:10.5px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;background:{{ r.vsBg }};color:{{ r.vsColor }};border:1px solid {{ r.vsColor }};white-space:nowrap"><span class="{{ r.vsDotClass }}" style="width:6px;height:6px;border-radius:50%;background:{{ r.vsColor }}"></span>{{ r.vsLabel }}</span>
+                <sc-if value="{{ r.hasPend }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ r.pendColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.pendLabel }}</span></sc-if>
+              </span>
+              <span style="display:flex;align-items:center;gap:7px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:{{ r.sigText }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ r.sigDot }}"></span>{{ r.sig }}</span>
+            </div>
+          </sc-for>
+          <sc-if value="{{ emptyTable }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:48px 24px;text-align:center;color:var(--text-3)">
+              <div style="width:36px;height:20px;border:1px dashed var(--line-strong);border-radius:2px"></div>
+              <div style="font-size:12.5px;color:var(--text-2)">Nenhum contrato corresponde aos filtros</div>
+              <div style="font-size:11.5px">{{ emptyHint }}</div>
+              <button onClick="{{ clearFilters }}" style="margin-top:4px;height:28px;padding:0 12px;border:1px solid var(--line-strong);border-radius:2px;background:var(--bg-2);color:var(--text-1);font-size:12px" style-hover="background:var(--bg-3)">Limpar filtros</button>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+
+    <aside style="border-left:1px solid var(--line);background:var(--bg-1);display:flex;flex-direction:column;min-height:0;min-width:0">
+      <sc-if value="{{ noSelection }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--text-3)">
+          <div style="width:36px;height:36px;border:1px dashed var(--line-strong);border-radius:2px;position:relative">
+            <span style="position:absolute;left:50%;top:6px;bottom:6px;width:1px;background:var(--line-strong)"></span>
+            <span style="position:absolute;top:50%;left:6px;right:6px;height:1px;background:var(--line-strong)"></span>
+          </div>
+          <div style="font-size:12.5px;color:var(--text-2)">Nenhum contrato selecionado</div>
+          <div style="font-size:11.5px;max-width:240px;line-height:1.5">Selecione uma linha da tabela ou um marcador no mapa para ver o contrato e agir.</div>
+          <div style="margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">{{ attentionHint }}</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ hasSelection }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow:auto;min-height:0">
+          <div style="padding:14px 16px 12px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:12px">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ v.client }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">{{ v.id }}</span></div>
+              <div style="display:flex;align-items:baseline;gap:8px;margin-top:3px"><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:500">{{ v.plate }}</span><span style="color:var(--text-2);font-size:12px">{{ v.model }}</span></div>
+            </div>
+            <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:2px;font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;background:{{ v.vsBg }};color:{{ v.vsColor }};border:1px solid {{ v.vsColor }};white-space:nowrap"><span class="{{ v.vsDotClass }}" style="width:6px;height:6px;border-radius:50%;background:{{ v.vsColor }}"></span>{{ v.vsLabel }}</span>
+            <button onClick="{{ deselect }}" style="background:none;border:0;color:var(--text-3);font-size:16px;line-height:1;padding:0 0 0 2px" title="Fechar">×</button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)">
+            <div style="padding:12px 16px;border-right:1px solid var(--line);border-bottom:1px solid var(--line-soft)">
+              <div style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Em atraso</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px;color:{{ v.amountColor }}">{{ v.amount }}</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11.5px;color:{{ v.bandColor }}"><span style="display:flex;gap:2px"><span style="width:5px;height:10px;background:{{ v.s1 }};border-radius:1px"></span><span style="width:5px;height:10px;background:{{ v.s2 }};border-radius:1px"></span><span style="width:5px;height:10px;background:{{ v.s3 }};border-radius:1px"></span></span>{{ v.lateLabel }}</div>
+            </div>
+            <div style="padding:12px 16px;border-bottom:1px solid var(--line-soft)">
+              <div style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Parcela</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px">{{ v.inst }}</div>
+              <div style="font-size:11.5px;color:var(--text-2);margin-top:6px;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">próx. {{ v.due }}</div>
+            </div>
+            <div style="grid-column:1 / -1;padding:10px 16px 12px">
+              <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-2)"><span>Parcelas pagas</span><span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;color:var(--text-1)">{{ v.paidLabel }}</span></div>
+              <div style="display:flex;height:4px;margin-top:6px;gap:1px;border-radius:1px;overflow:hidden;background:var(--line)"><span style="width:{{ v.paidPct }};background:var(--ok)"></span><span style="width:{{ v.overduePct }};background:var(--err)"></span></div>
+            </div>
+          </div>
+
+          <div style="padding:10px 16px 6px;font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Estado do veículo</div>
+          <div style="display:grid;grid-template-columns:auto 1fr;border-bottom:1px solid var(--line);font-size:12.5px">
+            <div style="padding:7px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Movimento</div>
+            <div style="padding:7px 16px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px"><span style="width:6px;height:6px;border-radius:50%;background:{{ v.motionColor }}"></span>{{ v.motion }}</div>
+            <div style="padding:7px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Ignição</div>
+            <div style="padding:7px 16px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px"><span style="width:6px;height:6px;border-radius:50%;background:{{ v.ignColor }}"></span>{{ v.ign }}</div>
+            <div style="padding:7px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Última posição</div>
+            <div style="padding:7px 16px;border-bottom:1px solid var(--line-soft);font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text-2)">{{ v.coords }}</div>
+            <div style="padding:7px 16px;color:var(--text-2)">Último sinal</div>
+            <div style="padding:7px 16px;display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ v.seenColor }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ v.sigDot }}"></span>{{ v.signal }} · {{ v.seen }}</div>
+          </div>
+
+          <div style="padding:10px 16px 6px;font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Histórico de parcelas</div>
+          <div style="border-bottom:1px solid var(--line)">
+            <sc-for list="{{ hist }}" as="h" hint-placeholder-count="5">
+              <div style="display:grid;grid-template-columns:24px 1fr auto 96px;gap:10px;align-items:center;padding:0 16px;height:26px;border-bottom:1px solid var(--line-soft);font-size:12px;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">
+                <span style="color:var(--text-3);font-size:11px">{{ h.n }}</span>
+                <span style="color:{{ h.dueColor }}">{{ h.due }}</span>
+                <span style="text-align:right">{{ h.value }}</span>
+                <span style="display:flex;align-items:center;gap:6px;justify-content:flex-end;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:{{ h.statusColor }}"><span style="width:6px;height:6px;border-radius:1px;background:{{ h.statusColor }}"></span>{{ h.status }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="padding:10px 16px 6px;font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Auditoria</div>
+          <div style="padding:0 16px 16px">
+            <sc-for list="{{ audit }}" as="a" hint-placeholder-count="4">
+              <div class="{{ a.rowClass }}" style="display:grid;grid-template-columns:10px 1fr;gap:10px;padding:0 0 10px">
+                <span style="position:relative;display:flex;justify-content:center"><span style="width:6px;height:6px;border-radius:50%;background:{{ a.color }};margin-top:5px"></span><span style="position:absolute;top:14px;bottom:-10px;width:1px;background:var(--line)"></span></span>
+                <div style="min-width:0">
+                  <div style="display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-variant-numeric:tabular-nums"><span style="color:var(--text-3)">{{ a.when }}</span><span style="color:{{ a.originColor }};letter-spacing:.06em">{{ a.origin }}</span></div>
+                  <div style="font-size:12.5px;margin-top:2px;color:{{ a.color }}">{{ a.action }}</div>
+                  <div style="font-size:11.5px;color:var(--text-2);line-height:1.4">{{ a.reason }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="border-top:1px solid var(--line);padding:12px 16px 14px;display:flex;flex-direction:column;gap:10px;background:var(--bg-1)">
+          <sc-if value="{{ rateLimited }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid rgba(239,68,68,.5);background:var(--err-soft);border-radius:2px;font-size:11.5px;color:var(--err)"><span style="width:6px;height:6px;border-radius:50%;background:var(--err)"></span>Limite de requisições atingido · libera em <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">{{ rateLeft }}</span></div>
+          </sc-if>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 10px">
+            <sc-for list="{{ actions }}" as="a" hint-placeholder-count="4">
+              <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+                <button onClick="{{ a.run }}" disabled="{{ a.disabled }}" class="{{ a.cls }}" style="height:34px;border-radius:2px;border:1px solid {{ a.border }};background:{{ a.bg }};color:{{ a.fg }};font-weight:{{ a.weight }};font-size:12.5px;letter-spacing:.01em;display:flex;align-items:center;justify-content:center;gap:8px;opacity:{{ a.op }}" style-hover="filter:brightness(1.12)">
+                  <sc-if value="{{ a.spin }}" hint-placeholder-val="{{ false }}"><span class="fp-spin" style="width:10px;height:10px;border-radius:50%;border:1.5px solid rgba(255,255,255,.35);border-top-color:#fff"></span></sc-if>
+                  {{ a.label }}
+                </button>
+                <span style="font-size:10.5px;line-height:1.35;color:{{ a.reasonColor }};min-height:14px">{{ a.reason }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border:1px solid {{ cmdBorder }};background:{{ cmdBg }};border-radius:2px;font-size:11px;font-family:'IBM Plex Mono',monospace">
+            <span style="color:var(--text-2)">COMANDO</span>
+            <span style="display:flex;align-items:center;gap:6px;color:{{ cmdColor }};text-align:right"><span class="{{ cmdDotClass }}" style="width:6px;height:6px;border-radius:50%;background:{{ cmdColor }};flex:none"></span>{{ cmdLabel }}</span>
+          </div>
+        </div>
+      </sc-if>
+    </aside>
+  </div>
+
+  <sc-if value="{{ dialogOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeDialog }}" style="position:fixed;inset:0;z-index:2000;background:rgba(11,14,19,.72);display:flex;align-items:center;justify-content:center">
+      <div onClick="{{ stop }}" style="width:480px;background:var(--bg-1);border:1px solid var(--line-strong);border-radius:2px;box-shadow:0 12px 40px rgba(0,0,0,.6);display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)">
+          <span style="width:8px;height:8px;background:var(--err);border-radius:1px"></span>
+          <span style="font-size:14px;font-weight:600">Solicitar bloqueio remoto</span>
+          <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">{{ dlg.id }}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:auto 1fr;font-size:12.5px;border-bottom:1px solid var(--line)">
+          <div style="padding:8px 18px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Cliente</div><div style="padding:8px 18px;border-bottom:1px solid var(--line-soft)">{{ dlg.client }}</div>
+          <div style="padding:8px 18px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Veículo</div><div style="padding:8px 18px;border-bottom:1px solid var(--line-soft)"><span style="font-family:'IBM Plex Mono',monospace;font-weight:500">{{ dlg.plate }}</span> <span style="color:var(--text-2)">{{ dlg.model }}</span></div>
+          <div style="padding:8px 18px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Em atraso</div><div style="padding:8px 18px;border-bottom:1px solid var(--line-soft);font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;color:var(--err)">{{ dlg.amount }} · <span style="font-weight:600">{{ dlg.late }} dias</span></div>
+          <div style="padding:8px 18px;color:var(--text-2)">Notificação prévia</div><div style="padding:8px 18px;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">{{ dlg.notified }} <span style="color:var(--text-3)">({{ dlg.notifiedAgo }})</span></div>
+        </div>
+        <div style="padding:14px 18px;display:flex;flex-direction:column;gap:6px">
+          <label style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Motivo <span style="color:var(--err)">obrigatório</span></label>
+          <textarea value="{{ dlgReason }}" onChange="{{ setReason }}" rows="3" placeholder="Ex.: 3 tentativas de contato sem retorno; cliente ciente do risco de bloqueio." style="resize:vertical;padding:8px 10px;border:1px solid var(--line-strong);border-radius:2px;background:var(--bg-2);color:var(--text-1);font-size:12.5px;line-height:1.45;outline:none" style-focus="border-color:var(--accent)"></textarea>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-3);text-align:right">{{ dlg.reasonCount }}</span>
+        </div>
+        <div style="margin:0 18px;padding:10px 12px;border:1px solid rgba(245,158,11,.45);background:var(--warn-soft);border-radius:2px;display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:12px;line-height:1.45;color:var(--text-1)">
+          <span style="width:14px;height:14px;border:1.5px dashed var(--warn);border-radius:50%;margin-top:2px;box-sizing:border-box"></span>
+          <span><span style="color:var(--warn);font-weight:600">O bloqueio não é imediato.</span> O comando fica <span style="font-weight:600">armado</span> e só é efetivado quando o veículo estiver parado com a ignição desligada. Até então o cliente pode circular normalmente e você pode cancelar.</span>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding:16px 18px">
+          <button onClick="{{ closeDialog }}" style="height:34px;padding:0 14px;border:1px solid var(--line-strong);border-radius:2px;background:var(--bg-2);color:var(--text-1);font-size:12.5px" style-hover="background:var(--bg-3)">Cancelar</button>
+          <button onClick="{{ confirmBlock }}" disabled="{{ dlg.cannot }}" style="height:34px;padding:0 16px;border:1px solid var(--err);border-radius:2px;background:var(--err);color:#fff;font-weight:600;font-size:12.5px;opacity:{{ dlg.confirmOp }}" style-hover="background:var(--err-hover)">Confirmar solicitação de bloqueio</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;connection&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;auto&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;auto&quot;,&quot;online&quot;,&quot;reconnecting&quot;],&quot;section&quot;:&quot;Simulação&quot;},&quot;blockOutcome&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;auto&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;auto&quot;,&quot;confirmado&quot;,&quot;falhou&quot;,&quot;expirado&quot;],&quot;section&quot;:&quot;Simulação&quot;},&quot;simSpeed&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;4h/s&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;1h/s&quot;,&quot;4h/s&quot;,&quot;12h/s&quot;],&quot;section&quot;:&quot;Simulação&quot;}}">
+const DAY=864e5;
+const FIRST=["Ana","Bruno","Carla","Diego","Elaine","Fábio","Gabriela","Henrique","Isabela","João","Karina","Leandro","Marcos","Natália","Otávio","Patrícia","Rafael","Simone","Thiago","Vanessa","Wagner","Yara"];
+const LAST=["Almeida","Barbosa","Cardoso","Duarte","Ferreira","Gonçalves","Lima","Martins","Nascimento","Oliveira","Pereira","Ribeiro","Santos","Souza","Teixeira","Vieira"];
+const MODELS=["Fiat Argo","VW Polo","Chevrolet Onix","Hyundai HB20","Fiat Strada","Toyota Corolla","Honda HR-V","Jeep Compass","Nissan Kicks","Fiat Toro","VW T-Cross","Renault Duster"];
+const AREA={s:-23.63,n:-23.49,w:-46.87,e:-46.41};const CENTER=[-23.56,-46.64];
+const BAND=[{key:"ok",label:"Em dia",color:"var(--text-3)"},{key:"b1",label:"1–15 dias",color:"var(--late-1)"},{key:"b2",label:"16–30 dias",color:"var(--late-2)"},{key:"b3",label:"> 30 dias",color:"var(--late-3)"}];
+const bandOf=d=>d<=0?0:d<=15?1:d<=30?2:3;
+const VS={ativo:{label:"Ativo",color:"var(--v-in-use)",bg:"rgba(120,130,150,.12)"},armado:{label:"Bloqueio armado",color:"var(--warn)",bg:"var(--warn-soft)"},bloqueado:{label:"Bloqueado",color:"var(--err)",bg:"var(--err-soft)"},desbloqueio_pendente:{label:"Desbloq. pendente",color:"var(--err)",bg:"rgba(239,68,68,.06)"}};
+const CMD={solicitado:["SOLICITADO","var(--accent)","rgba(59,130,246,.5)","var(--accent-soft)"],armado:["ARMADO · aguardando veículo parar","var(--warn)","rgba(245,158,11,.5)","var(--warn-soft)"],enviado:["ENVIADO · aguardando ACK","var(--accent)","rgba(59,130,246,.5)","var(--accent-soft)"],confirmado:["CONFIRMADO","var(--ok)","rgba(52,211,153,.5)","var(--ok-soft)"],cancelado:["CANCELADO","var(--text-2)","var(--line-strong)","transparent"],falhou:["FALHOU","var(--err)","rgba(239,68,68,.5)","var(--err-soft)"],expirado:["EXPIRADO","var(--warn)","rgba(245,158,11,.5)","var(--warn-soft)"]};
+const SPEED={"1h/s":36e5,"4h/s":144e5,"12h/s":432e5};
+const rnd=(a,b)=>a+Math.random()*(b-a);const pick=a=>a[Math.floor(Math.random()*a.length)];
+const plate=()=>pick("BCDFGHJKLMNPQRSTVWXZ".split(""))+pick("AEIOU".split(""))+pick("BCDFGHJKLMNPRSTVXZ".split(""))+Math.floor(rnd(0,10))+pick("ABCDEFGHJ".split(""))+Math.floor(rnd(10,100));
+const brl=v=>v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+const p2=n=>String(n).padStart(2,"0");
+const fmtD=t=>{const d=new Date(t);return p2(d.getDate())+"/"+p2(d.getMonth()+1)+"/"+d.getFullYear()};
+const fmtDT=t=>{const d=new Date(t);return fmtD(t)+" "+p2(d.getHours())+":"+p2(d.getMinutes())};
+const WD=["dom","seg","ter","qua","qui","sex","sáb"];
+const rel=ms=>{const s=Math.max(0,Math.round(ms/1000));if(s<60)return "há "+s+"s";const m=Math.floor(s/60);if(m<60)return "há "+m+"min";return "há "+Math.floor(m/60)+"h"};
+const relDays=ms=>{const d=Math.floor(ms/DAY);if(d>=1)return "há "+d+" dia"+(d>1?"s":"");const h=Math.floor(ms/36e5);return "há "+h+"h"};
+const CAR={body:"M6 .5C9 .5 10.5 1.6 10.8 3.6L11.3 8V19C11.3 20.9 9.8 21.5 6 21.5C2.2 21.5 .7 20.9 .7 19V8L1.2 3.6C1.5 1.6 3 .5 6 .5Z",glass:"M2.2 6.2h7.6L9 10H3z M2.6 15.5h6.8v2.5H2.6z"};
+const derive=(c,simNow)=>{const late=Math.max(0,Math.floor((simNow-c.nextDue)/DAY));let overdue=0;for(let k=c.paid;k<c.total;k++){if(c.nextDue+(k-c.paid)*30*DAY<simNow)overdue++;else break}return {late,overdue,amount:overdue*c.installment,band:bandOf(late)}};
+const INTERVAL=20e3,RATE_N=6,RATE_WIN=60e3;
+
+class Component extends DCLogic {
+  constructor(p){super(p);this.mapRef=React.createRef();this.tableRef=React.createRef();this.markers={};this.lastIcon={};this.map=null;this.visibleIds=[];
+    const now=Date.now();const d0=new Date();d0.setHours(8,0,0,0);const simNow=d0.getTime();
+    const contracts=[];
+    for(let i=0;i<50;i++){
+      const r=Math.random();const band=r<.5?0:r<.7?1:r<.85?2:3;
+      const late=band===0?0:band===1?Math.floor(rnd(1,16)):band===2?Math.floor(rnd(16,31)):Math.floor(rnd(31,80));
+      const nextDue=band===0?simNow+Math.floor(rnd(1,29))*DAY:simNow-late*DAY-rnd(0,.9)*DAY;
+      const total=pick([36,48,60]);const paid=Math.floor(rnd(3,total-8));
+      const installment=Math.round(rnd(890,2450))+.9;
+      let vstate="ativo";
+      if(band===3){const q=Math.random();vstate=q<.4?"bloqueado":q<.5?"armado":q<.58?"desbloqueio_pendente":"ativo"}
+      else if(band===2&&Math.random()<.12)vstate="armado";
+      let online=vstate==="desbloqueio_pendente"?false:Math.random()<.92;
+      const moving=vstate!=="bloqueado"&&online&&Math.random()<.45;
+      const notifiedAt=late>=3&&Math.random()<.75?simNow-Math.floor(rnd(2,Math.max(3,late-1)))*DAY:null;
+      const audit=[{at:simNow-Math.floor(rnd(60,400))*DAY,origin:"sistema",action:"Contrato ativado",reason:total+" parcelas de "+brl(installment)}];
+      if(late>0)audit.unshift({at:nextDue,origin:"sistema",action:"Parcela vencida",reason:"Parcela "+(paid+1)+" de "+total+" não paga"});
+      if(notifiedAt)audit.unshift({at:notifiedAt,origin:pick(["visitante","sistema"]),action:"Notificação enviada",reason:"Atraso de "+Math.floor((notifiedAt-nextDue)/DAY)+" dias · SMS e e-mail"});
+      let cmd=null;
+      if(vstate==="bloqueado"){const t=simNow-Math.floor(rnd(1,5))*DAY;audit.unshift({at:t-6*36e5,origin:"visitante",action:"Bloqueio solicitado",reason:"Sem retorno após notificação"},{at:t-6*36e5+9e5,origin:"sistema",action:"Bloqueio armado",reason:"Aguardando veículo parado com ignição desligada"},{at:t,origin:"sistema",action:"Bloqueio confirmado",reason:"Veículo parado, ignição desligada"});cmd={kind:"block",status:"confirmado",t:now-9e5,doneAt:now-9e5}}
+      if(vstate==="armado"){audit.unshift({at:simNow-rnd(2,10)*36e5,origin:"visitante",action:"Bloqueio solicitado",reason:"Cliente não respondeu às cobranças"},{at:simNow-rnd(1,2)*36e5,origin:"sistema",action:"Bloqueio armado",reason:"Aguardando veículo parado com ignição desligada"});cmd={kind:"block",status:"armado",t:now-rnd(5e3,3e4)}}
+      if(vstate==="desbloqueio_pendente"){audit.unshift({at:simNow-3*DAY,origin:"sistema",action:"Bloqueio confirmado",reason:"Veículo parado, ignição desligada"},{at:simNow-rnd(3,9)*36e5,origin:"visitante",action:"Pagamento registrado",reason:brl(installment)},{at:simNow-rnd(3,9)*36e5+6e4,origin:"sistema",action:"Desbloqueio pendente",reason:"Dispositivo offline · será enviado ao reconectar"})}
+      contracts.push({id:"L"+p2(i+1),client:pick(FIRST)+" "+pick(LAST),plate:plate(),model:pick(MODELS),installment,total,paid,nextDue,notifiedAt,vstate,online,moving,ignition:moving,speed:moving?Math.round(rnd(15,60)):0,heading:rnd(0,360),lat:rnd(AREA.s+.01,AREA.n-.01),lng:rnd(AREA.w+.01,AREA.e-.01),lastSeen:online?now-rnd(0,5e3):now-rnd(6e5,2.16e7),audit,cmd,lastActionAt:0});
+    }
+    let theme="dark";try{theme=localStorage.getItem("fleetpulse-theme")||"dark"}catch(e){}
+    this.state={contracts,simNow,now,selectedId:null,band:"all",vs:"all",q:"",dialog:null,conn:"online",retry:0,dropAt:now+50e3,staleAt:0,actions:[],theme};
+  }
+  componentDidMount(){this.applyTheme(this.state.theme);this.initMap();this.timer=setInterval(()=>this.tick(),1000)}
+  applyTheme(t){document.documentElement.setAttribute("data-theme",t);if(this.map)this.setTiles(t)}
+  setTiles(t){const L=window.L;if(this.tiles)this.map.removeLayer(this.tiles);this.tiles=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_"+(t==="light"?"Light":"Dark")+"_Gray_Base/MapServer/tile/{z}/{y}/{x}",{maxZoom:16,attribution:"© Esri, HERE, OpenStreetMap"}).addTo(this.map);this.tiles.bringToBack()}
+  setTheme=(t)=>{try{localStorage.setItem("fleetpulse-theme",t)}catch(e){}this.applyTheme(t);this.setState({theme:t})}
+  componentWillUnmount(){clearInterval(this.timer);if(this.ro)this.ro.disconnect();if(this.map)this.map.remove()}
+  componentDidUpdate(){this.syncMarkers()}
+  initMap(){
+    if(!window.L||!this.mapRef.current){setTimeout(()=>this.initMap(),100);return}
+    const L=window.L;const map=L.map(this.mapRef.current,{center:CENTER,zoom:12,zoomControl:true,zoomSnap:.25});this.map=map;
+    const fit=()=>{map.invalidateSize();map.fitBounds([[AREA.s,AREA.w],[AREA.n,AREA.e]],{padding:[28,36]})};fit();setTimeout(fit,400);
+    if(window.ResizeObserver){this.ro=new ResizeObserver(()=>map.invalidateSize());this.ro.observe(this.mapRef.current)}
+    this.setTiles(this.state.theme);
+    map.on("click",()=>this.setState({selectedId:null}));this.syncMarkers();
+  }
+  iconHtml(c,sel,d){
+    const vs=VS[c.vstate];let fill=vs.color,stroke="rgba(0,0,0,.6)",dash="",win="var(--glass)",op=1;
+    if(c.vstate==="desbloqueio_pendente"){fill="var(--v-offline)";stroke="var(--err)";dash="2 1.5";win="rgba(239,68,68,.35)"}
+    if(!c.online){stroke=c.vstate==="desbloqueio_pendente"?"var(--err)":"var(--text-3)";dash="2 1.5";win="rgba(91,100,114,.5)";op=.8;if(c.vstate==="ativo")fill="var(--v-offline)"}
+    const car='<svg width="14" height="24" viewBox="0 0 12 22" style="display:block;transform:rotate('+Math.round(c.heading)+'deg);transform-origin:50% 50%;filter:drop-shadow(0 1px 1px rgba(0,0,0,.8))"><path d="'+CAR.body+'" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+'/><path d="'+CAR.glass+'" fill="'+win+'"/></svg>';
+    const armed=c.vstate==="armado"?'<span class="fp-armed" style="position:absolute;left:50%;top:12px;width:26px;height:26px;margin:-13px 0 0 -13px;border:1.5px dashed var(--warn);border-radius:50%;pointer-events:none"></span>':"";
+    const ring=sel?'<span style="position:absolute;left:50%;top:12px;width:32px;height:32px;margin:-16px 0 0 -16px;border:2px solid var(--accent);border-radius:50%;box-shadow:0 0 0 3px rgba(59,130,246,.25),0 0 12px rgba(59,130,246,.5);pointer-events:none"></span>':"";
+    const bandC=BAND[d.band].color;const txt=c.id+(d.late>0?" "+d.late+"d":"");
+    const blocked=c.vstate==="bloqueado"&&!sel;
+    const chipBg=sel?"var(--accent)":blocked?"rgba(239,68,68,.92)":"var(--chip)";const chipFg=sel||blocked?"#fff":d.late>0?bandC:"var(--text-2)";const chipBd=sel?"var(--accent)":blocked?"var(--err)":c.vstate==="armado"?"rgba(245,158,11,.6)":"var(--chip-border)";
+    return '<div style="position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;width:56px;height:44px;opacity:'+op+'">'+ring+armed+car+'<span style="font:600 10px/1 \'IBM Plex Mono\',monospace;letter-spacing:.02em;white-space:nowrap;color:'+chipFg+';background:'+chipBg+';padding:2px 4px;border-radius:2px;border:1px solid '+chipBd+'">'+txt+'</span></div>';
+  }
+  syncMarkers(){
+    if(!this.map)return;const L=window.L;const {simNow,selectedId}=this.state;
+    this.state.contracts.forEach(c=>{
+      const sel=c.id===selectedId;const d=derive(c,simNow);
+      const key=[c.vstate,sel,c.online,d.late,Math.round(c.heading/10)].join("|");
+      let m=this.markers[c.id];const mk=()=>L.divIcon({html:this.iconHtml(c,sel,d),iconSize:[56,44],iconAnchor:[28,12]});
+      if(!m){m=L.marker([c.lat,c.lng],{icon:mk(),zIndexOffset:sel?1000:c.vstate==="ativo"?0:200}).addTo(this.map);m.on("click",e=>{L.DomEvent.stopPropagation(e);this.select(c.id,"map")});this.markers[c.id]=m;this.lastIcon[c.id]=key}
+      else{m.setLatLng([c.lat,c.lng]);if(this.lastIcon[c.id]!==key){m.setIcon(mk());m.setZIndexOffset(sel?1000:c.vstate==="ativo"?0:200);this.lastIcon[c.id]=key}}
+    });
+  }
+  select=(id,from)=>{
+    this.setState({selectedId:id});
+    const c=this.state.contracts.find(x=>x.id===id);if(!c)return;
+    if(from==="map"&&this.tableRef.current){const i=this.visibleIds.indexOf(id);if(i>=0){const el=this.tableRef.current;const y=i*32;if(y<el.scrollTop||y+32>el.scrollTop+el.clientHeight)el.scrollTop=Math.max(0,y-el.clientHeight/2+16)}}
+    if(from==="table"&&this.map&&!this.map.getBounds().pad(-.1).contains([c.lat,c.lng]))this.map.panTo([c.lat,c.lng]);
+  };
+  audit(n,origin,action,reason,simNow){n.audit=[{at:simNow,origin,action,reason,fresh:true},...n.audit]}
+  outcome(){const o=this.props.blockOutcome??"auto";if(o!=="auto")return o;return Math.random()<.85?"confirmado":"falhou"}
+  tick(){
+    const now=Date.now();
+    this.setState(st=>{
+      let {conn,retry,dropAt,staleAt}=st;const mode=this.props.connection??"auto";
+      if(mode==="online")conn="online";else if(mode==="reconnecting"){if(conn!=="reconnecting"){conn="reconnecting";staleAt=now;retry=0}retry++}
+      else{if(conn==="online"&&now>dropAt){conn="reconnecting";staleAt=now;retry=0}else if(conn==="reconnecting"){retry++;if(retry>7){conn="online";dropAt=now+rnd(60e3,120e3)}}}
+      const live=conn==="online";
+      const simNow=st.simNow+(SPEED[this.props.simSpeed??"4h/s"]||SPEED["4h/s"]);
+      const contracts=st.contracts.map(c=>{
+        const n={...c};
+        if(n.nextDue>st.simNow&&n.nextDue<=simNow)this.audit(n,"sistema","Parcela vencida","Parcela "+(n.paid+1)+" de "+n.total+" não paga",simNow);
+        if(!live)return n;
+        if(n.online&&Math.random()<.0015){n.online=false;n.lastSeen=now}else if(!n.online&&Math.random()<.012){n.online=true;n.lastSeen=now}
+        if(n.online)n.lastSeen=now-rnd(0,4e3);
+        if(n.vstate==="ativo"||n.vstate==="armado"){
+          if(n.moving){
+            if(Math.random()<.02){n.moving=false;n.speed=0;n.ignition=Math.random()<.4}
+            else{n.heading=(n.heading+rnd(-12,12)+360)%360;if(Math.random()<.1)n.speed=Math.max(8,Math.min(80,n.speed+Math.round(rnd(-10,10))));const dd=n.speed/3600/111*1.5;n.lat+=Math.cos(n.heading*Math.PI/180)*dd;n.lng+=Math.sin(n.heading*Math.PI/180)*dd/Math.cos(n.lat*Math.PI/180);
+              if(n.lat<AREA.s||n.lat>AREA.n||n.lng<AREA.w||n.lng>AREA.e)n.heading=(Math.atan2(CENTER[1]-n.lng,CENTER[0]-n.lat)*180/Math.PI+360)%360}
+          } else {if(n.ignition&&Math.random()<.06)n.ignition=false;else if(n.vstate==="ativo"&&Math.random()<.012){n.moving=true;n.ignition=true;n.speed=Math.round(rnd(15,50))}}
+        }
+        const cmd=n.cmd;
+        if(cmd){const age=now-cmd.t;
+          if(cmd.kind==="block"){
+            if(cmd.status==="solicitado"&&age>900){n.cmd={...cmd,status:"armado",t:now};n.vstate="armado";this.audit(n,"sistema","Bloqueio armado","Aguardando veículo parado com ignição desligada",simNow)}
+            else if(cmd.status==="armado"){
+              const forceExp=(this.props.blockOutcome??"auto")==="expirado"&&age>10e3;
+              if(forceExp||(!n.online&&age>30e3)){n.cmd={...cmd,status:"expirado",doneAt:now};n.vstate="ativo";this.audit(n,"sistema","Bloqueio expirado",n.online?"Sem confirmação do dispositivo dentro do prazo":"Dispositivo offline por mais de 30s",simNow)}
+              else if(n.online&&!n.moving&&!n.ignition&&age>1500){n.cmd={...cmd,status:"enviado",t:now};this.audit(n,"sistema","Comando de bloqueio enviado","Veículo parado, ignição desligada",simNow)}
+            }
+            else if(cmd.status==="enviado"&&age>2000){const out=this.outcome()==="falhou"?"falhou":"confirmado";n.cmd={...cmd,status:out,doneAt:now};
+              if(out==="confirmado"){n.vstate="bloqueado";n.moving=false;n.speed=0;n.ignition=false;this.audit(n,"sistema","Bloqueio confirmado","Imobilizador acionado · ACK em "+(rnd(1.2,2.4)).toFixed(1).replace(".",",")+"s",simNow)}
+              else{n.vstate="ativo";this.audit(n,"sistema","Bloqueio falhou","Dispositivo recusou o comando",simNow)}}
+          } else if(cmd.kind==="unblock"&&cmd.status==="enviado"&&age>2000){n.cmd={...cmd,status:"confirmado",doneAt:now};n.vstate="ativo";this.audit(n,"sistema","Desbloqueio confirmado","Imobilizador liberado",simNow)}
+        }
+        if(n.vstate==="desbloqueio_pendente"&&n.online&&!(n.cmd&&n.cmd.kind==="unblock"&&n.cmd.status==="enviado")){n.cmd={kind:"unblock",status:"enviado",t:now};this.audit(n,"sistema","Desbloqueio enviado","Dispositivo reconectou",simNow)}
+        n.audit=n.audit.map(a=>a.fresh&&a.at<simNow-1?{...a,fresh:false}:a);
+        return n;
+      });
+      return {contracts,simNow,now,conn,retry,dropAt,staleAt,actions:st.actions.filter(t=>now-t<RATE_WIN)};
+    });
+  }
+  act(id,fn){const now=Date.now();this.setState(st=>{const actions=[...st.actions.filter(t=>now-t<RATE_WIN),now];const contracts=st.contracts.map(c=>{if(c.id!==id)return c;const n={...c,lastActionAt:now};fn(n,st.simNow,now);return n});return {actions,contracts}})}
+  unblock(n,simNow,now,via){
+    if(n.online){n.cmd={kind:"unblock",status:"enviado",t:now};this.audit(n,"visitante","Desbloqueio solicitado",via,simNow)}
+    else{n.vstate="desbloqueio_pendente";n.cmd=null;this.audit(n,"visitante","Desbloqueio pendente",via+" · dispositivo offline, será enviado ao reconectar",simNow)}
+  }
+  guards(c,d,now){
+    const r=[];const since=now-c.lastActionAt;
+    if(this.state.actions.filter(t=>now-t<RATE_WIN).length>=RATE_N)r.rate=true;
+    if(c.lastActionAt&&since<INTERVAL)r.interval="Aguardando intervalo entre ações · "+Math.ceil((INTERVAL-since)/1000)+"s";
+    return r;
+  }
+  renderVals(){
+    const {contracts,simNow,now,selectedId,band,vs,q,dialog,conn,retry,staleAt,actions:acts}=this.state;
+    const online=conn==="online";
+    const der=contracts.map(c=>({c,d:derive(c,simNow)}));
+    const totalOverdue=der.reduce((s,x)=>s+x.d.amount,0);
+    const armed=contracts.filter(c=>c.vstate==="armado").length,blocked=contracts.filter(c=>c.vstate==="bloqueado").length,pend=contracts.filter(c=>c.vstate==="desbloqueio_pendente").length;
+    const lateN=der.filter(x=>x.d.late>0).length;
+    const kpis=[{label:"Contratos ativos",value:contracts.length,sub:lateN+" em atraso",color:"var(--text-3)",valueColor:"var(--text-1)"},{label:"Valor total em atraso",value:brl(totalOverdue),sub:der.reduce((s,x)=>s+x.d.overdue,0)+" parcelas",color:"var(--err)",valueColor:totalOverdue>0?"var(--err)":"var(--text-1)"},{label:"Bloqueios armados",value:armed,sub:"aguardando parada",color:"var(--warn)",valueColor:armed>0?"var(--warn)":"var(--text-1)"},{label:"Veículos bloqueados",value:blocked,sub:pend+" desbloq. pendente",color:"var(--err)",valueColor:"var(--text-1)"}];
+    const sd=new Date(simNow),rd=new Date(now);
+    const simDate=WD[sd.getDay()]+" "+fmtDT(simNow);const realDate=fmtD(now);
+    const clock=[rd.getHours(),rd.getMinutes(),rd.getSeconds()].map(p2).join(":");
+    const bandCount=k=>k==="all"?der.length:der.filter(x=>BAND[x.d.band].key===k).length;
+    const bandChips=[{key:"all",label:"Todos",dot:"transparent"},...BAND.map(b=>({key:b.key,label:b.label,dot:b.color}))].map(b=>{const on=band===b.key;return {...b,count:bandCount(b.key),bg:on?"var(--bg-3)":"transparent",fg:on?"var(--text-1)":"var(--text-2)",countColor:on?"var(--text-2)":"var(--text-3)",click:()=>this.setState({band:b.key})}});
+    const ql=q.trim().toLowerCase();
+    const visible=der.filter(({c,d})=>(band==="all"||BAND[d.band].key===band)&&(vs==="all"||c.vstate===vs)&&(!ql||c.plate.toLowerCase().includes(ql)||c.client.toLowerCase().includes(ql)||c.id.toLowerCase().includes(ql))).sort((a,b)=>b.d.late-a.d.late||a.c.client.localeCompare(b.c.client));
+    this.visibleIds=visible.map(x=>x.c.id);
+    const pendLabel=c=>{if(!c.cmd)return "";const s=c.cmd.status;if(c.cmd.kind==="unblock")return s==="enviado"?"desbloqueio enviado":"";return s==="solicitado"?"solicitado":s==="armado"?"aguardando parar":s==="enviado"?"enviado · ACK":""};
+    const rows=visible.map(({c,d})=>{const V=VS[c.vstate];const sel=c.id===selectedId;const bc=BAND[d.band].color;const pl=pendLabel(c);const pend=!!pl;
+      return {id:c.id,client:c.client,clientColor:"var(--text-1)",plate:c.plate,model:c.model,inst:brl(c.installment),due:fmtD(c.nextDue),dueColor:d.late>0?bc:"var(--text-2)",late:d.late>0?String(d.late)+"d":"em dia",lateColor:d.late>0?bc:"var(--text-3)",lateWeight:d.band===3?600:500,s1:d.band>=1?bc:"var(--line)",s2:d.band>=2?bc:"var(--line)",s3:d.band>=3?bc:"var(--line)",vsLabel:V.label,vsColor:V.color,vsBg:V.bg,vsDotClass:c.vstate==="armado"?"fp-armed":"",hasPend:pend,pendLabel:pl,pendColor:c.vstate==="armado"?"var(--warn)":"var(--accent)",sig:c.online?"online":"offline "+rel(now-c.lastSeen).slice(3),sigDot:c.online?"var(--ok)":"var(--text-3)",sigText:c.online?"var(--text-2)":"var(--warn)",bg:sel?"var(--accent-soft)":"transparent",bar:sel?"var(--accent)":pend?"var(--warn)":"transparent",select:()=>this.select(c.id,"table")}});
+    const emptyTable=visible.length===0;const emptyHint=ql?"Nenhuma placa ou cliente contém “"+q.trim()+"”.":"Combine outra faixa de atraso ou estado do veículo.";
+    const worst=der.filter(x=>x.d.late>=16&&x.c.vstate==="ativo").length;
+    const attentionHint=worst+" contratos com 16+ dias e veículo ativo";
+    const sel=der.find(x=>x.c.id===selectedId);
+    let v=null,hist=[],audit=[],actions=[],cmdRow=["OCIOSO","var(--text-3)","var(--line)","transparent"],cmdDotClass="",rateLimited=false,rateLeft="";
+    const rateCount=acts.filter(t=>now-t<RATE_WIN).length;
+    if(rateCount>=RATE_N){rateLimited=true;rateLeft=Math.ceil((RATE_WIN-(now-Math.min(...acts)))/1000)+"s"}
+    let dlg={},dlgReason="";
+    if(sel){const {c,d}=sel;const V=VS[c.vstate];const bc=BAND[d.band].color;const age=now-c.lastSeen;
+      v={id:c.id,client:c.client,plate:c.plate,model:c.model,vsLabel:V.label,vsColor:V.color,vsBg:V.bg,vsDotClass:c.vstate==="armado"?"fp-armed":"",amount:brl(d.amount),amountColor:d.amount>0?"var(--err)":"var(--text-1)",lateLabel:d.late>0?d.late+" dias · "+BAND[d.band].label:"em dia",bandColor:d.late>0?bc:"var(--text-3)",s1:d.band>=1?bc:"var(--line)",s2:d.band>=2?bc:"var(--line)",s3:d.band>=3?bc:"var(--line)",inst:brl(c.installment),due:fmtD(c.nextDue),paidLabel:c.paid+" / "+c.total,paidPct:(c.paid/c.total*100).toFixed(1)+"%",overduePct:(d.overdue/c.total*100).toFixed(1)+"%",
+        motion:c.vstate==="bloqueado"?"IMOBILIZADO":c.moving?"EM MOVIMENTO · "+c.speed+" km/h":"PARADO",motionColor:c.moving?"var(--v-in-use)":c.vstate==="bloqueado"?"var(--err)":"var(--text-3)",ign:c.ignition?"LIGADA":"DESLIGADA",ignColor:c.ignition?"var(--warn)":"var(--text-3)",coords:c.lat.toFixed(5)+", "+c.lng.toFixed(5),signal:c.online?"ONLINE":"OFFLINE",sigDot:c.online?"var(--ok)":"var(--text-3)",seen:rel(age),seenColor:c.online?"var(--text-1)":"var(--warn)"};
+      const from=Math.max(0,c.paid-2),to=Math.min(c.total,c.paid+d.overdue+2);
+      for(let k=from;k<to;k++){const due=c.nextDue+(k-c.paid)*30*DAY;const paid=k<c.paid;const lateK=!paid&&due<simNow;hist.push({n:p2(k+1),due:fmtD(due),dueColor:lateK?"var(--err)":paid?"var(--text-2)":"var(--text-1)",value:brl(c.installment),status:paid?"paga":lateK?"vencida":"aberta",statusColor:paid?"var(--ok)":lateK?"var(--err)":"var(--text-3)"})}
+      audit=c.audit.slice(0,8).map(a=>({when:fmtDT(a.at),origin:a.origin.toUpperCase(),originColor:a.origin==="visitante"?"var(--accent)":"var(--text-3)",action:a.action,reason:a.reason,color:/falhou|expirado|Bloqueio confirmado|vencida/.test(a.action)?(/confirmado|vencida/.test(a.action)?"var(--err)":"var(--warn)"):/Desbloqueio confirmado|Pagamento/.test(a.action)?"var(--ok)":"var(--text-1)",rowClass:a.fresh?"fp-row-in":""}));
+      const g=this.guards(c,d,now);
+      const inflight=c.cmd&&["solicitado","enviado"].includes(c.cmd.status);
+      const common=r=>g.rate?"Limite de requisições atingido":g.interval?g.interval:r;
+      const notifRecent=c.notifiedAt&&simNow-c.notifiedAt<DAY;
+      const mk=(label,kind,reason,run,o={})=>{const dis=!!reason;const danger=kind==="danger",primary=kind==="primary";
+        return {label,run,disabled:dis,reason:reason||o.hint||"",reasonColor:reason?(g.rate||g.interval?"var(--warn)":"var(--text-3)"):"var(--text-3)",cls:o.cls||"",spin:!!o.spin,op:dis?.45:1,weight:danger||primary?600:500,bg:danger?"var(--err)":primary?"var(--accent)":"var(--bg-2)",border:danger?"var(--err)":primary?"var(--accent)":"var(--line-strong)",fg:danger||primary?"#fff":"var(--text-1)"}};
+      actions=[
+        mk("Notificar cliente","primary",common(d.late<1?"Contrato em dia":notifRecent?"Notificado há menos de 24h":""),()=>this.act(c.id,(n,s)=>{n.notifiedAt=s;this.audit(n,"visitante","Notificação enviada","Atraso de "+d.late+" dias · "+brl(d.amount)+" · SMS e e-mail",s)}),{hint:c.notifiedAt?"última "+fmtD(c.notifiedAt):"nenhuma notificação enviada"}),
+        mk(c.vstate==="armado"?"Bloqueio armado":inflight&&c.cmd.kind==="block"?"Enviando…":"Solicitar bloqueio","danger",common(c.vstate!=="ativo"?(c.vstate==="armado"?"Aguardando veículo parar para efetivar":c.vstate==="bloqueado"?"Veículo já bloqueado":"Desbloqueio pendente"):inflight?"Comando em trânsito":d.late<16?"Política: exige 16+ dias em atraso (atual "+d.late+")":!c.notifiedAt?"Política: notificação prévia obrigatória":simNow-c.notifiedAt<2*DAY?"Política: notificação há menos de 48h":!c.online?"Dispositivo offline · comando não chegaria":""),()=>this.setState({dialog:{reason:""}}),{spin:inflight&&c.cmd.kind==="block",cls:inflight?"fp-pending":"",hint:"exige confirmação e motivo"}),
+        mk("Cancelar bloqueio","secondary",common(c.vstate==="ativo"?(inflight?"Comando em trânsito":"Nenhum bloqueio ativo ou armado"):c.vstate==="desbloqueio_pendente"?"Desbloqueio já pendente":c.cmd&&c.cmd.kind==="unblock"&&c.cmd.status==="enviado"?"Desbloqueio em trânsito":c.cmd&&c.cmd.status==="enviado"?"Comando em trânsito":""),()=>this.act(c.id,(n,s,t)=>{if(n.vstate==="armado"){n.cmd={...n.cmd,status:"cancelado",doneAt:t};n.vstate="ativo";this.audit(n,"visitante","Bloqueio cancelado","Cancelado antes da efetivação",s)}else if(n.vstate==="bloqueado")this.unblock(n,s,t,"Cancelamento manual")}),{hint:c.vstate==="bloqueado"?"envia desbloqueio":""}),
+        mk("Registrar pagamento","secondary",common(d.overdue===0&&c.nextDue-simNow>5*DAY?"Sem parcela vencida ou a vencer em 5 dias":c.paid>=c.total?"Contrato quitado":""),()=>this.act(c.id,(n,s,t)=>{n.paid+=1;n.nextDue+=30*DAY;this.audit(n,"visitante","Pagamento registrado",brl(n.installment)+" · parcela "+n.paid+" de "+n.total,s);const nd=derive(n,s);if(nd.late===0){if(n.vstate==="armado"){n.cmd={...n.cmd,status:"cancelado",doneAt:t};n.vstate="ativo";this.audit(n,"sistema","Bloqueio cancelado","Atraso regularizado",s)}else if(n.vstate==="bloqueado")this.unblock(n,s,t,"Atraso regularizado")}}),{hint:d.overdue>0?"quita a parcela mais antiga":""})
+      ];
+      if(c.cmd){const st=c.cmd.status;const base=CMD[st]||cmdRow;cmdRow=c.cmd.kind==="unblock"?["DESBLOQUEIO · "+base[0],base[1],base[2],base[3]]:base;cmdDotClass=["solicitado","enviado"].includes(st)?"fp-live":st==="armado"?"fp-armed":""}
+      if(dialog){dlgReason=dialog.reason;const ok=dialog.reason.trim().length>=8;dlg={id:c.id,client:c.client,plate:c.plate,model:c.model,amount:brl(d.amount),late:d.late,notified:c.notifiedAt?fmtDT(c.notifiedAt):"—",notifiedAgo:c.notifiedAt?relDays(simNow-c.notifiedAt):"nunca",reasonCount:dialog.reason.trim().length+" / mín. 8 caracteres",cannot:!ok,confirmOp:ok?1:.45}}
+    }
+    const dark=this.state.theme!=="light";
+    return {setDark:()=>this.setTheme("dark"),setLight:()=>this.setTheme("light"),knobLeft:dark?"30px":"2px",darkFg:dark?"var(--bg-1)":"var(--text-3)",lightFg:dark?"var(--text-3)":"var(--bg-1)",simDate,realDate,simSpeedLabel:"×"+Math.round((SPEED[this.props.simSpeed??"4h/s"]||SPEED["4h/s"])/1000),online,reconnecting:!online,clock,retryLabel:"("+retry+"/8)",staleLabel:rel(now-staleAt),mapRef:this.mapRef,tableRef:this.tableRef,
+      kpis,bandChips,vsFilter:vs,setVs:e=>this.setState({vs:e.target.value}),q,setQ:e=>this.setState({q:e.target.value}),visibleCount:visible.length,totalCount:contracts.length,rows,emptyTable,emptyHint,clearFilters:()=>this.setState({band:"all",vs:"all",q:""}),
+      noSelection:!sel,hasSelection:!!sel,attentionHint,v,hist,audit,actions,deselect:()=>this.setState({selectedId:null}),rateLimited,rateLeft,
+      cmdLabel:cmdRow[0],cmdColor:cmdRow[1],cmdBorder:cmdRow[2],cmdBg:cmdRow[3],cmdDotClass,
+      dialogOpen:!!(dialog&&sel),dlg,dlgReason,setReason:e=>this.setState({dialog:{reason:e.target.value}}),closeDialog:()=>this.setState({dialog:null}),stop:e=>e.stopPropagation(),
+      confirmBlock:()=>{if(!sel||!dialog)return;const reason=dialog.reason.trim();if(reason.length<8)return;this.act(sel.c.id,(n,s,t)=>{n.cmd={kind:"block",status:"solicitado",t,reason};this.audit(n,"visitante","Bloqueio solicitado",reason,s)});this.setState({dialog:null})}};
+  }
+}
+</script>
+</body>
+</html>

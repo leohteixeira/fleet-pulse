@@ -10,7 +10,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
+	"github.com/leohteixeira/fleet-pulse/internal/book"
+	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
@@ -18,11 +22,16 @@ import (
 )
 
 type fakeStore struct {
-	snap store.Snapshot
+	snap    store.Snapshot
+	pingErr error
 }
 
 func (f fakeStore) Snapshot() store.Snapshot {
 	return f.snap
+}
+
+func (f fakeStore) Ping(context.Context) error {
+	return f.pingErr
 }
 
 func seededSnapshot() store.Snapshot {
@@ -42,7 +51,7 @@ func seededSnapshot() store.Snapshot {
 func TestHandler_Snapshot(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil, nil).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/api/vehicles", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -72,16 +81,155 @@ func TestHandler_Snapshot(t *testing.T) {
 		if v.VIN == sim.OfflineVIN {
 			hasOffline = true
 		}
+		if strings.HasPrefix(v.VIN, "FPULSELSG") {
+			t.Fatalf("snapshot contains leasing vin %q", v.VIN)
+		}
 	}
 	if !hasOffline {
 		t.Fatalf("snapshot missing offline vin %q", sim.OfflineVIN)
 	}
 }
 
+func TestHandler_ClockDefaultAndRate(t *testing.T) {
+	t.Parallel()
+
+	originSim := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	originReal := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		clk      *clock.Clock
+		wantRate string
+		wantMult int
+	}{
+		{
+			name:     "default 4h/s",
+			clk:      clock.Fixed(clock.ParseRate(""), originSim, originReal),
+			wantRate: clock.Rate4h,
+			wantMult: 14400,
+		},
+		{
+			name:     "12h/s",
+			clk:      clock.Fixed(clock.ParseRate(clock.Rate12h), originSim, originReal),
+			wantRate: clock.Rate12h,
+			wantMult: 43200,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil, nil, httpapi.WithClock(tt.clk)).Handler()
+			req := httptest.NewRequest(http.MethodGet, "/api/clock", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			var body struct {
+				Simulated  string `json:"simulated"`
+				Real       string `json:"real"`
+				Rate       string `json:"rate"`
+				Multiplier int    `json:"multiplier"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Rate != tt.wantRate || body.Multiplier != tt.wantMult {
+				t.Fatalf("rate = %s ×%d, want %s ×%d", body.Rate, body.Multiplier, tt.wantRate, tt.wantMult)
+			}
+			wantSim := originSim.UTC().Format(time.RFC3339)
+			wantReal := originReal.UTC().Format(time.RFC3339)
+			if body.Simulated != wantSim || body.Real != wantReal {
+				t.Fatalf("times = sim %q real %q, want %q and %q", body.Simulated, body.Real, wantSim, wantReal)
+			}
+		})
+	}
+}
+
+func TestHandler_Contracts(t *testing.T) {
+	t.Parallel()
+
+	list := []book.Contract{
+		{
+			ID:           "c1",
+			VIN:          "FPULSELSG00000001",
+			ClientName:   "Ana Costa",
+			PayerProfile: book.ProfilePontual,
+			DaysLate:     0,
+			OverdueBand:  book.BandEmDia,
+		},
+	}
+	h := httpapi.New(
+		fakeStore{snap: seededSnapshot()},
+		httpapi.NewHub(),
+		nil,
+		nil,
+		httpapi.WithContracts(fakeContracts{list: list}),
+	).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Contracts []book.Contract `json:"contracts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Contracts) != 1 {
+		t.Fatalf("len(contracts) = %d, want 1", len(body.Contracts))
+	}
+	got := body.Contracts[0]
+	if got.ID != "c1" ||
+		got.VIN != "FPULSELSG00000001" ||
+		got.ClientName != "Ana Costa" ||
+		got.PayerProfile != book.ProfilePontual ||
+		got.DaysLate != 0 ||
+		got.OverdueBand != book.BandEmDia {
+		t.Fatalf("contract = %+v, want id=c1 Ana Costa pontual 0 em_dia", got)
+	}
+	if strings.HasPrefix(got.VIN, "FPULSESAO") {
+		t.Fatal("contracts listed a rental vin")
+	}
+}
+
+func TestHandler_VehiclesStillRentalAfterBookPort(t *testing.T) {
+	t.Parallel()
+
+	h := httpapi.New(
+		fakeStore{snap: seededSnapshot()},
+		httpapi.NewHub(),
+		nil,
+		nil,
+		httpapi.WithContracts(fakeContracts{list: []book.Contract{{
+			VIN: "FPULSELSG00000001",
+		}}}),
+	).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/vehicles", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var snap store.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(snap.Vehicles) != sim.FleetSize {
+		t.Fatalf("len(vehicles) = %d, want %d", len(snap.Vehicles), sim.FleetSize)
+	}
+	for _, v := range snap.Vehicles {
+		if strings.HasPrefix(v.VIN, "FPULSELSG") {
+			t.Fatalf("snapshot contains leasing vin %q", v.VIN)
+		}
+	}
+}
+
 func TestHandler_Healthz(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil).Handler()
+	ready := fakeStore{}
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil, ready).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -90,10 +238,26 @@ func TestHandler_Healthz(t *testing.T) {
 	}
 }
 
+func TestHandler_HealthzNotReady(t *testing.T) {
+	t.Parallel()
+
+	ready := fakeStore{pingErr: fmt.Errorf("ping failed")}
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil, ready).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want non-200", rec.Code)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestHandler_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil, nil).Handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/vehicles", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -106,11 +270,11 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	srv := httptest.NewServer(httpapi.New(fakeStore{snap: seededSnapshot()}, hub, nil).Handler())
+	srv := httptest.NewServer(httpapi.New(fakeStore{snap: seededSnapshot()}, hub, nil, nil).Handler())
 	t.Cleanup(srv.Close)
 
 	ctx := t.Context()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream?fleet=rental", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -136,7 +300,7 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	}
 
 	payload := []byte(`{"vin":"FPULSESAO00000001","lat":-23.55,"lng":-46.63}`)
-	hub.Publish(httpapi.Event{Name: "telemetry", Data: payload})
+	hub.Publish(httpapi.Event{Name: "telemetry", Data: payload, Fleet: httpapi.FleetRental})
 
 	got, err := readSSE(resp.Body)
 	if err != nil {
@@ -218,7 +382,7 @@ func TestHandler_Unlock(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), tt.unlocker).Handler()
+			h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), tt.unlocker, nil).Handler()
 			req := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+tt.vin+"/unlock", nil)
 			if tt.key != "" {
 				req.Header.Set("Idempotency-Key", tt.key)
@@ -259,7 +423,7 @@ func TestHandler_UnlockWithMachine(t *testing.T) {
 	pub := &ackPublisher{}
 	svc := command.New(pub, mem, nil)
 	pub.svc = svc
-	h := httpapi.New(mem, httpapi.NewHub(), svc).Handler()
+	h := httpapi.New(mem, httpapi.NewHub(), svc, nil).Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/unlock", nil)
 	req.Header.Set("Idempotency-Key", "machine-1")
@@ -332,7 +496,7 @@ func TestHandler_LockAndQueue(t *testing.T) {
 	mem.Seed([]store.Vehicle{{VIN: "FPULSESAO00000001", DisplayID: "V01"}})
 	pub := &holdPublisher{}
 	svc := command.New(pub, mem, nil)
-	h := httpapi.New(mem, httpapi.NewHub(), svc).Handler()
+	h := httpapi.New(mem, httpapi.NewHub(), svc, nil).Handler()
 
 	lockReq := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/lock", nil)
 	lockReq.Header.Set("Idempotency-Key", "lock-1")
@@ -416,7 +580,7 @@ func TestHandler_GetCommand(t *testing.T) {
 		State:         command.StateAcked,
 		CorrelationID: "corr-1",
 	}}
-	h := httpapi.New(fakeStore{}, httpapi.NewHub(), unlocker).Handler()
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), unlocker, nil).Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/commands/cmd-1", nil)
 	rec := httptest.NewRecorder()
@@ -440,10 +604,83 @@ func TestHandler_GetCommand(t *testing.T) {
 	}
 }
 
+type fakeLeasing struct {
+	rec block.Record
+}
+
+func (f fakeLeasing) Get(id string) (block.Record, bool) {
+	if f.rec.ID == id {
+		return f.rec, true
+	}
+	return block.Record{}, false
+}
+
+func TestHandler_GetLeasingCommand(t *testing.T) {
+	t.Parallel()
+
+	lease := fakeLeasing{rec: block.Record{
+		ID:            "lease-1",
+		VIN:           "FPULSELSG00000001",
+		Action:        block.ActionBlock,
+		State:         block.StateArmed,
+		CorrelationID: "corr-lease",
+	}}
+	h := httpapi.New(
+		fakeStore{snap: seededSnapshot()},
+		httpapi.NewHub(),
+		nil,
+		nil,
+		httpapi.WithLeasingCommands(lease),
+	).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commands/lease-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.Bytes())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range []string{"id", "vin", "action", "state", "correlationId"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("missing key %q in %s", key, rec.Body.Bytes())
+		}
+	}
+	if body["id"] != "lease-1" || body["action"] != "block" || body["state"] != "ARMED" {
+		t.Fatalf("body = %v", body)
+	}
+
+	miss := httptest.NewRecorder()
+	h.ServeHTTP(miss, httptest.NewRequest(http.MethodGet, "/api/commands/missing", nil))
+	if miss.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404", miss.Code)
+	}
+
+	snapRec := httptest.NewRecorder()
+	h.ServeHTTP(snapRec, httptest.NewRequest(http.MethodGet, "/api/vehicles", nil))
+	if snapRec.Code != http.StatusOK {
+		t.Fatalf("vehicles status = %d, want 200", snapRec.Code)
+	}
+	var snap store.Snapshot
+	if err := json.Unmarshal(snapRec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if len(snap.Vehicles) != sim.FleetSize {
+		t.Fatalf("len(vehicles) = %d, want %d", len(snap.Vehicles), sim.FleetSize)
+	}
+	for _, v := range snap.Vehicles {
+		if strings.HasPrefix(v.VIN, "FPULSELSG") {
+			t.Fatalf("snapshot contains leasing vin %q", v.VIN)
+		}
+	}
+}
+
 func TestHandler_SPAFallback(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil, nil).Handler()
 
 	home := httptest.NewRequest(http.MethodGet, "/", nil)
 	homeRec := httptest.NewRecorder()
@@ -468,6 +705,18 @@ func TestHandler_SPAFallback(t *testing.T) {
 		t.Fatal("unknown path did not fall back to index.html")
 	}
 
+	for _, path := range []string{"/carteira", "/carteira/foo"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d", path, rec.Code, http.StatusOK)
+		}
+		if rec.Body.String() != homeRec.Body.String() {
+			t.Fatalf("GET %s did not fall back to index.html", path)
+		}
+	}
+
 	apiMiss := httptest.NewRequest(http.MethodGet, "/api/missing", nil)
 	apiRec := httptest.NewRecorder()
 	h.ServeHTTP(apiRec, apiMiss)
@@ -480,7 +729,10 @@ func TestHub_Drain(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 	hub.Drain()
 	if _, ok := <-events; ok {
@@ -492,7 +744,10 @@ func TestHub_DropOldest(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 
 	const extra = 1
@@ -531,6 +786,39 @@ func TestHub_DropOldest(t *testing.T) {
 			return
 		}
 	}
+}
+
+type fakeContracts struct {
+	list []book.Contract
+	err  error
+}
+
+func (f fakeContracts) List(context.Context) ([]book.Contract, error) {
+	if f.list == nil {
+		return []book.Contract{}, f.err
+	}
+	return f.list, f.err
+}
+
+func (f fakeContracts) Get(_ context.Context, id string) (book.Detail, error) {
+	for _, c := range f.list {
+		if c.ID == id {
+			return book.Detail{Contract: c, Installments: []book.InstallmentView{}, Audit: []book.AuditView{}}, f.err
+		}
+	}
+	return book.Detail{}, book.ErrNotFound
+}
+
+func (fakeContracts) Notify(context.Context, book.NotifyInput) (book.WriteResult, error) {
+	return book.WriteResult{}, book.ErrNotFound
+}
+
+func (fakeContracts) Pay(context.Context, book.PayInput) (book.PayResult, error) {
+	return book.PayResult{}, book.ErrNotFound
+}
+
+func (fakeContracts) AppendAudit(context.Context, book.AuditInput) (string, error) {
+	return "", nil
 }
 
 type fakeUnlocker struct {

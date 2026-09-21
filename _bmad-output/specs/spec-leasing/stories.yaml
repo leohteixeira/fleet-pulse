@@ -1,0 +1,118 @@
+- id: "1"
+  title: PostgreSQL, migrations, sqlc, and store swap
+  description: >-
+    Replace the phase-1 in-memory store implementation with PostgreSQL, goose
+    migrations, and sqlc while keeping the consumer-owned interface (CAP-14).
+    Rental unlock/lock and SSE keep working against the new backing store.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Load golang-how-to first. pgx, sqlc, goose. Tables as architecture.md.
+    vehicle_state upsert plus in-memory cache. No utils package. Consumer-owned
+    interfaces. Do not change the rental 5s command machine. Position history
+    is out of this story.
+
+- id: "2"
+  title: Route library and procedural simulator
+  description: >-
+    Add the offline OSRM seed (~60 São Paulo POIs, ~300 routes) and drive both
+    fleets from it (CAP-16 motion). Rental stays on fleet/{vin}/; leasing
+    publishes on leasing/{vin}/telemetry|ack as real MQTT clients.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Production never calls an external router. About 20 rental and 50 leasing
+    vehicles. Configurable RNG seed. Incident scheduler: offline, low battery,
+    signal loss. Leasing devices refuse about 15% of block executions when that
+    path exists; if block is not wired yet, leave a hook. Validate the seed
+    visually before treating the story as done.
+
+- id: "3"
+  title: Simulated clock, contracts, and book lifecycle
+  description: >-
+    Ship GET /api/clock and the leasing book that moves through delinquency on
+    its own (CAP-12, CAP-16). Profiles 40/30/20/10; active book 40–60; 10%
+    floor per overdue band.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Calendar rate is environment-only (1h/s, 4h/s default, 12h/s). Telemetry
+    timestamps stay real time. Do not expose a UI speed control. Payments
+    follow the payer profile at each due date, including after visitor
+    intervention. No Carteira UI in this story.
+
+- id: "4"
+  title: Block machine, outbox, and unlock redelivery
+  description: >-
+    Implement the leasing block machine REQUESTED→ARMED→SENT→ACKED|FAILED|TIMEOUT
+    plus CANCELLED, transactional outbox, and offline unlock redelivery
+    (CAP-6, CAP-7, CAP-8). A blocked vehicle must not ignite or move.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    ARMED waits for speed 0, ignition off, and online; it is not the rental 5s
+    window. TIMEOUT is ARMED offline more than 30s. Command, audit, and outbox
+    row commit in one transaction; relay publishes leasing/{vin}/commands.
+    English state names. Prove with curl/logs before any Carteira chrome.
+
+- id: "5"
+  title: Policy, audit, and leasing HTTP
+  description: >-
+    Expose clock, leasing vehicles, contracts, notify, block, cancel, and
+    payments with server-side policy and append-only audit (CAP-4, CAP-5,
+    CAP-9, CAP-10). Switch SSE to GET /api/stream?fleet=rental|leasing.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Policy: 16+ days, prior notify ≥48h, device online; 422 plus readable
+    codes. Notify cooldown 24h simulated. Payment only if overdue or due
+    within 5 simulated days. Reason 8–280 chars; body 8 KiB.
+    Idempotency-Key scoped to contract+action. Visitor audit is a hashed
+    anonymous id, never raw IP. Missing/invalid fleet query is 400. Update
+    Frota EventSource to ?fleet=rental. Update openapi.yaml as you go.
+
+- id: "6"
+  title: Public demo protection and self-heal
+  description: >-
+    Enforce the public-demo guards so visitors cannot empty or freeze the
+    book (CAP-13). 6 writes/60s/IP (429 + Retry-After), 20s per contract
+    (409), 64 SSE connections, 30-day max block, 10% band floor.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Guards are server-owned. Same-origin CORS and 8 KiB body limit belong
+    here if not already on the write routes. Self-heal must still run after
+    visitor actions. Do not hide refused actions in any later UI; this story
+    is HTTP-provable with curl.
+
+- id: "7"
+  title: Carteira console, router, and stream UX
+  description: >-
+    Ship react-router (/ , /carteira, /carteira/:id) and the Carteira console
+    against ux.md plus the adopted design HTML (CAP-1, CAP-2, CAP-3, CAP-11,
+    CAP-12). 409/422/429 use the designed copy; tab-switch ?fleet= is not
+    STREAM CAIU.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Visual contract is docs/leasing/design and ux.md — complete fidelity.
+    Map share 42%, panel 380px, markers 56×44 anchor [28,12]. ARMED uses the
+    2.4s dashed ring, never a spinner. Refused buttons stay visible at .45.
+    Block only through the 480px dialog. Portuguese UI copy. One EventSource,
+    StrictMode-safe. No client-side policy evaluation. Unknown :id shows the
+    empty panel, no toast.
+
+- id: "8"
+  title: Compose, Caddy, embed, and contract docs
+  description: >-
+    Package the public demo as one binary plus PostgreSQL and Caddy
+    (CAP-15). Migrations on boot, healthchecks, MQTT internal-only,
+    same-origin CORS, openapi.yaml complete, README names the trade-offs.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Compose project name and ports stay on the Fleet Pulse assignment.
+    Bind 0.0.0.0. go:embed with index.html fallback for the SPA. slog JSON;
+    shutdown drains SSE first. Retention jobs for audit and finished
+    commands so disk stays stable. Position history remains the first cut
+    if time is gone.

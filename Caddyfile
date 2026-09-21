@@ -1,0 +1,24 @@
+# Same-origin visitor surface. UI and API share host :3300.
+# MQTT is not published; the broker stays inside the app container.
+:3300 {
+	encode zstd gzip
+
+	handle /api* {
+		reverse_proxy app:8300
+	}
+
+	handle /healthz {
+		reverse_proxy app:8300
+	}
+
+	# SPA routes served by the embedded Vite build (index.html fallback).
+	@spa path / /carteira /carteira/*
+	handle @spa {
+		reverse_proxy app:8300
+	}
+
+	# Hashed assets and any other non-API path.
+	handle {
+		reverse_proxy app:8300
+	}
+}

@@ -315,6 +315,118 @@ func TestRun_Ack(t *testing.T) {
 	}
 }
 
+func TestRun_LeasingNotApplied(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	sub := newFakeSub()
+	sink := &recordingSink{}
+	acks := &recordingAcks{}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ingest.Run(ctx, sub, sink, acks, log)
+	}()
+
+	select {
+	case <-sub.subscribed:
+	case err := <-errCh:
+		t.Fatalf("run ended before subscribe: %v", err)
+	}
+	waitFor(t, func() bool {
+		return sub.hasFilter(ingest.LeasingTelemetryFilter) && sub.hasFilter(ingest.LeasingAckFilter)
+	})
+
+	sub.deliver(
+		ingest.LeasingTelemetryFilter,
+		"leasing/FPULSELSG00000001/telemetry",
+		[]byte(`{"vin":"FPULSELSG00000001","lat":-23.55,"lng":-46.63,"displayId":"L01"}`),
+	)
+	sub.deliver(
+		ingest.LeasingAckFilter,
+		"leasing/FPULSELSG00000001/ack",
+		[]byte(`{"commandId":"cmd-lease","ok":true}`),
+	)
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if applied := sink.applied(); len(applied) != 0 {
+		t.Fatalf("rental sink applied leasing telemetry: %+v", applied)
+	}
+	ids, _ := acks.applied()
+	if len(ids) != 0 {
+		t.Fatalf("rental ack sink applied leasing ack: %v", ids)
+	}
+	got := buf.String()
+	if !strings.Contains(got, `"msg":"leasing telemetry"`) {
+		t.Fatalf("log missing leasing telemetry in %s", got)
+	}
+	if !strings.Contains(got, `"msg":"leasing ack"`) {
+		t.Fatalf("log missing leasing ack in %s", got)
+	}
+}
+
+func TestRun_LeasingAppliedToLeasingPorts(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	sub := newFakeSub()
+	rentalSink := &recordingSink{}
+	rentalAcks := &recordingAcks{}
+	leaseSink := &recordingSink{}
+	leaseAcks := &recordingAcks{}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ingest.Run(ctx, sub, rentalSink, rentalAcks, log, ingest.WithLeasing(leaseSink, leaseAcks))
+	}()
+
+	select {
+	case <-sub.subscribed:
+	case err := <-errCh:
+		t.Fatalf("run ended before subscribe: %v", err)
+	}
+	waitFor(t, func() bool {
+		return sub.hasFilter(ingest.LeasingTelemetryFilter) && sub.hasFilter(ingest.LeasingAckFilter)
+	})
+
+	sub.deliver(
+		ingest.LeasingTelemetryFilter,
+		"leasing/FPULSELSG00000001/telemetry",
+		[]byte(`{"vin":"FPULSELSG00000001","lat":-23.55,"lng":-46.63,"speed":0,"ignition":false,"displayId":"L01"}`),
+	)
+	sub.deliver(
+		ingest.LeasingAckFilter,
+		"leasing/FPULSELSG00000001/ack",
+		[]byte(`{"commandId":"cmd-lease","ok":false}`),
+	)
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if applied := rentalSink.applied(); len(applied) != 0 {
+		t.Fatalf("rental sink applied leasing telemetry: %+v", applied)
+	}
+	if ids, _ := rentalAcks.applied(); len(ids) != 0 {
+		t.Fatalf("rental ack sink applied leasing ack: %v", ids)
+	}
+	got := leaseSink.applied()
+	if len(got) != 1 || got[0].VIN != "FPULSELSG00000001" || got[0].Speed != 0 {
+		t.Fatalf("leasing sink = %+v, want one parked telem", got)
+	}
+	ids, oks := leaseAcks.applied()
+	if len(ids) != 1 || ids[0] != "cmd-lease" || oks[0] {
+		t.Fatalf("leasing acks = %v/%v, want cmd-lease/false", ids, oks)
+	}
+}
+
 func waitFor(t *testing.T, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

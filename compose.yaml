@@ -1,0 +1,56 @@
+# Demo stack. Visitor URL is Caddy on 3300 (UI + API, same origin).
+# Postgres 5435 is published for local `go run`. MQTT stays inside the app
+# container and must not be published.
+name: fleet-pulse
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fleetpulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fleetpulse}
+      POSTGRES_DB: ${POSTGRES_DB:-fleetpulse}
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - fleet_pulse_pg:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-fleetpulse}:${POSTGRES_PASSWORD:-fleetpulse}@postgres:5432/${POSTGRES_DB:-fleetpulse}?sslmode=disable
+      SIM_SEED: ${SIM_SEED:-1}
+      CALENDAR_RATE: ${CALENDAR_RATE:-4h/s}
+      AUDIT_HASH_SECRET: ${AUDIT_HASH_SECRET:-}
+      TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8300"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8300/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "3300:3300"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  fleet_pulse_pg:

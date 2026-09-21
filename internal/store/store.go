@@ -1,4 +1,5 @@
-// Package store keeps last-known fleet state in memory.
+// Package store keeps last-known fleet state. Memory is the in-process cache;
+// Postgres is the production write-through backing store.
 package store
 
 import (
@@ -53,7 +54,7 @@ type Memory struct {
 	polygon  Polygon
 }
 
-// New returns an empty store that already owns the Centro polygon.
+// New returns an empty cache that already owns the Centro polygon.
 func New() *Memory {
 	return &Memory{
 		vehicles: make(map[string]Vehicle),
@@ -114,6 +115,17 @@ func (m *Memory) Apply(update Vehicle) (exit Vehicle, crossed bool) {
 		return cur, true
 	}
 	return Vehicle{}, false
+}
+
+// lookup returns a copy of the cached vehicle for vin.
+func (m *Memory) lookup(vin string) (Vehicle, bool) {
+	if vin == "" {
+		return Vehicle{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	v, ok := m.vehicles[vin]
+	return v, ok
 }
 
 // Has reports whether vin exists in the roster or last-known map.

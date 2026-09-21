@@ -3,11 +3,255 @@ info:
   title: Fleet Pulse
   version: 0.1.0
   description: >
-    Single-process fleet simulator. Six HTTP endpoints plus an embedded SPA.
-    No authentication. Fleet state lives in memory.
+    Single-process fleet simulator. HTTP endpoints plus an embedded SPA.
+    No authentication. Last-known rental state is persisted in PostgreSQL.
+    Leasing writes require Idempotency-Key. Policy and visitor audit are
+    server-owned. Calendar rate is environment-only (CALENDAR_RATE).
+    GET /api/stream requires fleet=rental|leasing.
+    MQTT is not published. Position history is out of scope.
 servers:
+  - url: http://127.0.0.1:3300
+    description: Compose Caddy (UI and API, same origin)
   - url: http://127.0.0.1:8300
+    description: Direct app bind (local go run)
 paths:
+  /api/clock:
+    get:
+      summary: Simulated calendar
+      operationId: getClock
+      responses:
+        '200':
+          description: Simulated date, rate (and ×N), and real time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Clock'
+  /api/leasing/vehicles:
+    get:
+      summary: Leasing snapshot
+      operationId: getLeasingVehicles
+      responses:
+        '200':
+          description: Financed roster with last-known telem when present
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeasingSnapshot'
+  /api/contracts:
+    get:
+      summary: Active leasing book
+      operationId: getContracts
+      parameters:
+        - name: overdueBand
+          in: query
+          schema:
+            type: string
+            enum: [em_dia, 1_15, 16_30, acima_30]
+        - name: vehicleState
+          in: query
+          schema:
+            type: string
+            enum: [ativo, armado, bloqueado, desbloqueio_pendente]
+      responses:
+        '200':
+          description: Active contracts with days late and overdue band
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractList'
+  /api/contracts/{id}:
+    get:
+      summary: Contract detail
+      operationId: getContract
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+      responses:
+        '200':
+          description: Contract plus installments and audit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDetail'
+        '404':
+          description: Unknown contract
+  /api/contracts/{id}/notify:
+    post:
+      summary: Notify a late contract
+      operationId: notifyContract
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Notify recorded; same key replays the original record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          description: Missing Idempotency-Key
+        '404':
+          description: Unknown contract
+        '413':
+          description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+        '422':
+          description: Policy refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+  /api/contracts/{id}/block:
+    post:
+      summary: Request a leasing immobilizer command
+      operationId: blockContract
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockRequest'
+      responses:
+        '202':
+          description: Block accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+        '400':
+          description: Missing Idempotency-Key
+        '404':
+          description: Unknown contract
+        '413':
+          description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+        '422':
+          description: Policy refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+  /api/contracts/{id}/block/cancel:
+    post:
+      summary: Cancel an armed block or unlock a blocked VIN
+      operationId: cancelBlock
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Cancelled or unlock accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+        '400':
+          description: Missing Idempotency-Key
+        '404':
+          description: Unknown contract
+        '413':
+          description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+        '422':
+          description: Command in transit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+  /api/contracts/{id}/payments:
+    post:
+      summary: Record a visitor payment
+      operationId: payContract
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Payment recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResult'
+        '400':
+          description: Missing Idempotency-Key
+        '404':
+          description: Unknown contract
+        '413':
+          description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
+        '422':
+          description: No installment overdue or due within 5 simulated days
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/vehicles:
     get:
       summary: Fleet snapshot
@@ -23,13 +267,28 @@ paths:
     get:
       summary: Live telemetry, command, and area-exit events
       operationId: getStream
+      parameters:
+        - name: fleet
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [rental, leasing]
       responses:
         '200':
-          description: Server-sent events; per-client buffer drops the oldest frame
+          description: Server-sent events for one fleet; per-client buffer drops the oldest frame
           content:
             text/event-stream:
               schema:
                 type: string
+        '400':
+          description: Missing or unknown fleet query
+        '429':
+          description: Process-wide cap of 64 SSE connections reached; existing clients stay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/vehicles/{vin}/unlock:
     post:
       summary: Unlock a vehicle
@@ -81,6 +340,7 @@ paths:
   /api/commands/{id}:
     get:
       summary: Command state
+      description: Returns a rental door command or a leasing block/unlock command by id. JSON keys are the same for both fleets.
       operationId: getCommand
       parameters:
         - name: id
@@ -99,11 +359,13 @@ paths:
           description: Unknown command
   /healthz:
     get:
-      summary: Liveness
+      summary: Readiness
       operationId: healthz
       responses:
         '200':
-          description: Process is up
+          description: Process is up and the database pool is reachable
+        '503':
+          description: Database pool is unreachable
 components:
   parameters:
     Vin:
@@ -115,6 +377,12 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
+      required: true
+      schema:
+        type: string
+    ContractId:
+      name: id
+      in: path
       required: true
       schema:
         type: string
@@ -168,10 +436,131 @@ components:
         vin: { type: string }
         action:
           type: string
-          enum: [unlock, lock]
+          enum: [unlock, lock, block]
         state:
           $ref: '#/components/schemas/CommandState'
         correlationId: { type: string }
     CommandState:
       type: string
-      enum: [PENDING, SENT, ACKED, FAILED, TIMEOUT]
+      enum: [PENDING, SENT, ACKED, FAILED, TIMEOUT, REQUESTED, ARMED, CANCELLED]
+    Clock:
+      type: object
+      required: [simulated, real, rate, multiplier]
+      properties:
+        simulated: { type: string, format: date-time }
+        real: { type: string, format: date-time }
+        rate:
+          type: string
+          enum: [1h/s, 4h/s, 12h/s]
+        multiplier: { type: integer }
+    ContractList:
+      type: object
+      required: [contracts]
+      properties:
+        contracts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contract'
+    Contract:
+      type: object
+      required: [id, vin, clientName, payerProfile, daysLate, overdueBand]
+      properties:
+        id: { type: string }
+        vin: { type: string }
+        clientName: { type: string }
+        payerProfile:
+          type: string
+          enum: [pontual, atrasa_ocasionalmente, regulariza_apos_notificacao, inadimplente]
+        daysLate: { type: integer }
+        overdueBand:
+          type: string
+          enum: [em_dia, 1_15, 16_30, acima_30]
+    LeasingSnapshot:
+      type: object
+      required: [vehicles]
+      properties:
+        vehicles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vehicle'
+    ContractDetail:
+      allOf:
+        - $ref: '#/components/schemas/Contract'
+        - type: object
+          required: [installments, audit]
+          properties:
+            installments:
+              type: array
+              items:
+                $ref: '#/components/schemas/Installment'
+            audit:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditEntry'
+    Installment:
+      type: object
+      required: [id, dueOn, amount, paid]
+      properties:
+        id: { type: string }
+        dueOn: { type: string, format: date }
+        amount: { type: string }
+        paid: { type: boolean }
+    AuditEntry:
+      type: object
+      required: [action, origin, createdAt]
+      properties:
+        id: { type: integer }
+        action: { type: string }
+        origin:
+          type: string
+          enum: [VISITANTE, SISTEMA]
+        visitorHash: { type: string }
+        createdAt: { type: string, format: date-time }
+    BlockRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 8
+          maxLength: 280
+    WriteResult:
+      type: object
+      required: [id, action]
+      properties:
+        id: { type: string }
+        action: { type: string }
+    PaymentResult:
+      type: object
+      required: [id, installmentId, vin, daysLate]
+      properties:
+        id: { type: string }
+        installmentId: { type: string }
+        vin: { type: string }
+        daysLate: { type: integer }
+    PolicyError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - late_below_16
+            - notify_required
+            - notify_too_recent
+            - device_offline
+            - reason_invalid
+            - in_day
+            - notify_cooldown
+            - payment_not_due
+            - in_transit
+        message: { type: string }
+    ContractBusy:
+      type: object
+      required: [code, message, retryAfter]
+      properties:
+        code:
+          type: string
+          enum: [contract_busy, rate_limited, stream_full]
+        message: { type: string }
+        retryAfter: { type: integer, minimum: 0 }
