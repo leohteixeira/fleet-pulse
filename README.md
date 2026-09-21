@@ -1,11 +1,21 @@
 # Fleet Pulse
 
 A single-process fleet simulator. One Go binary hosts an embedded MQTT broker,
-in-memory store, HTTP API, and the production UI. Simulated vehicles connect as
-real MQTT clients. There is no database and no authentication.
+PostgreSQL-backed store, HTTP API, and the production UI. Simulated vehicles
+connect as real MQTT clients. There is no authentication.
+
+PostgreSQL is required. For local `go run`, start it from Compose on host
+port `5435` (the workspace matrix leaves that port unassigned):
 
 ```text
-go run ./cmd/server
+cp env.example .env
+docker compose up -d
+```
+
+Then:
+
+```text
+DATABASE_URL=postgres://fleetpulse:fleetpulse@127.0.0.1:5435/fleetpulse?sslmode=disable go run ./cmd/server
 ```
 
 Then open `http://127.0.0.1:8300`. Vite on `:3300` is only a development convenience.
@@ -23,15 +33,17 @@ flowchart LR
   subgraph process["single Go process"]
     HTTP["stdlib HTTP\n:8300"]
     SSE["SSE hub"]
-    Store["in-memory store"]
+    Store["Postgres store\n+ vehicle_state cache"]
     Ingest["MQTT ingest"]
     Broker["mochi-mqtt v2\n:1883"]
     Sim["simulator\n15–25 MQTT clients"]
     UI["embedded web\ngo:embed"]
   end
+  PG["PostgreSQL"]
   Browser["browser"] -->|GET /api/vehicles\nGET /api/stream\nPOST unlock/lock| HTTP
   Browser -->|static| UI
   HTTP --> Store
+  Store --> PG
   HTTP --> SSE
   HTTP -->|publish command| Broker
   Ingest -->|telemetry + ack| Store
@@ -53,13 +65,24 @@ never calls Overpass. Regenerate the file with `go run ./scripts/fetchroads`.
 
 ## Trade-offs
 
-The fleet and command machines live in an **in-memory store**. That keeps the
-MVP to one process with no Compose or database, and it makes the demo start in
-seconds. The cost is total: a restart wipes last-known positions, command
-history, and the event feed. Persistence, replicas, and auth are out of scope.
+Last-known rental positions live in PostgreSQL (`vehicles` + `vehicle_state`)
+with an in-memory `vehicle_state` cache in front of the upsert. `GET /healthz`
+is ready only when the process is up **and** the pool pings. Rental door
+commands stay in process memory; a restart still wipes the 5s machine and the
+SSE feed. Auth and replicas remain out of scope.
+
+`DATABASE_URL` is required. The process exits before listening on `:8300` when
+it is missing or invalid. Example:
+
+```text
+postgres://fleetpulse:fleetpulse@127.0.0.1:5435/fleetpulse?sslmode=disable
+```
+
+Compose project name is `fleet-pulse`. It publishes Postgres on `5435` only —
+not HTTP `3300`/`8300` or MQTT `1883`.
 
 Shutdown drains SSE clients first, then stops the simulator, then closes the
-broker.
+broker, then closes the database pool.
 
 ## Develop
 

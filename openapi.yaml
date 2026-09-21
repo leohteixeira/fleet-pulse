@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: >
     Single-process fleet simulator. Six HTTP endpoints plus an embedded SPA.
-    No authentication. Fleet state lives in memory.
+    No authentication. Last-known rental state is persisted in PostgreSQL.
 servers:
   - url: http://127.0.0.1:8300
 paths:
@@ -99,11 +99,13 @@ paths:
           description: Unknown command
   /healthz:
     get:
-      summary: Liveness
+      summary: Readiness
       operationId: healthz
       responses:
         '200':
-          description: Process is up
+          description: Process is up and the database pool is reachable
+        '503':
+          description: Database pool is unreachable
 components:
   parameters:
     Vin:
