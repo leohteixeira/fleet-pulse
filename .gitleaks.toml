@@ -1,0 +1,8 @@
+title = "Fleet Pulse secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated lockfiles"
+paths = ['''(^|/)pnpm-lock\.yaml$''', '''(^|/)go\.sum$''']
