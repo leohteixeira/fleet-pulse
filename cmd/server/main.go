@@ -13,7 +13,9 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/leohteixeira/fleet-pulse/internal/book"
 	"github.com/leohteixeira/fleet-pulse/internal/broker"
+	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
@@ -30,6 +32,8 @@ var (
 	_ httpapi.Store     = (*store.Postgres)(nil)
 	_ httpapi.Ready     = (*store.Postgres)(nil)
 	_ httpapi.Unlocker  = (*command.Service)(nil)
+	_ httpapi.Clock     = (*clock.Clock)(nil)
+	_ httpapi.Contracts = (*book.Book)(nil)
 	_ command.Publisher = (*broker.Broker)(nil)
 	_ command.Vehicles  = (*store.Postgres)(nil)
 )
@@ -69,6 +73,12 @@ func run(log *slog.Logger) error {
 	defer pg.Close()
 	pg.Seed(rosterFromSim(sim.NewFleet()))
 
+	clk := clock.FromEnv()
+	bk := book.New(pg, clk, log)
+	if err := bk.Seed(ctx); err != nil {
+		return fmt.Errorf("seed book: %w", err)
+	}
+
 	b := broker.New(defaultBindAddr, log)
 	if err := b.Start(ctx); err != nil {
 		return fmt.Errorf("start broker: %w", err)
@@ -102,7 +112,14 @@ func run(log *slog.Logger) error {
 
 	httpCtx, stopHTTP := context.WithCancel(context.Background())
 	simCtx, stopSim := context.WithCancel(context.Background())
-	handler := httpapi.New(pg, hub, cmds, pg).Handler()
+	handler := httpapi.New(
+		pg,
+		hub,
+		cmds,
+		pg,
+		httpapi.WithClock(clk),
+		httpapi.WithContracts(bk),
+	).Handler()
 	httpDone := make(chan struct{})
 	wg.Go(func() {
 		defer close(httpDone)
@@ -112,6 +129,9 @@ func run(log *slog.Logger) error {
 	})
 	wg.Go(func() {
 		cmds.RunExpiry(simCtx)
+	})
+	wg.Go(func() {
+		bk.Run(ctx)
 	})
 
 	wg.Go(func() {

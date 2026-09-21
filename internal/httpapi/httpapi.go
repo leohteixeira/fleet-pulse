@@ -1,4 +1,5 @@
-// Package httpapi serves the fleet snapshot, door commands, health check, and SSE stream.
+// Package httpapi serves the fleet snapshot, simulated clock, leasing book,
+// door commands, health check, and SSE stream.
 package httpapi
 
 import (
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/book"
+	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 	"github.com/leohteixeira/fleet-pulse/internal/webui"
@@ -45,26 +48,63 @@ type Unlocker interface {
 	Get(id string) (command.Record, bool)
 }
 
+// Clock is the calendar port declared by HTTP. The clock package implements it.
+type Clock interface {
+	Snapshot() clock.Snapshot
+}
+
+// Contracts is the read-only book port declared by HTTP. The book package implements it.
+type Contracts interface {
+	List(ctx context.Context) ([]book.Contract, error)
+}
+
+// Option configures optional HTTP ports (clock, contracts).
+type Option func(*Server)
+
+// WithClock wires GET /api/clock.
+func WithClock(c Clock) Option {
+	return func(s *Server) {
+		s.clock = c
+	}
+}
+
+// WithContracts wires GET /api/contracts.
+func WithContracts(c Contracts) Option {
+	return func(s *Server) {
+		s.contracts = c
+	}
+}
+
 // Server is the stdlib HTTP surface for snapshot, lock/unlock, health, and SSE.
 type Server struct {
-	store    Store
-	hub      HubPort
-	unlocker Unlocker
-	ready    Ready
-	files    fs.FS
+	store     Store
+	hub       HubPort
+	unlocker  Unlocker
+	ready     Ready
+	clock     Clock
+	contracts Contracts
+	files     fs.FS
 }
 
 // New wires consumer-owned store, hub, command, and ready ports.
-func New(store Store, hub HubPort, unlocker Unlocker, ready Ready) *Server {
+func New(store Store, hub HubPort, unlocker Unlocker, ready Ready, opts ...Option) *Server {
 	if hub == nil {
 		hub = NewHub()
 	}
-	return &Server{store: store, hub: hub, unlocker: unlocker, ready: ready, files: webui.FS()}
+	s := &Server{store: store, hub: hub, unlocker: unlocker, ready: ready, files: webui.FS()}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
 }
 
 // Handler registers snapshot, lock, unlock, command lookup, stream, health, and the SPA.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/clock", s.clockHandler)
+	mux.HandleFunc("GET /api/contracts", s.contractsHandler)
 	mux.HandleFunc("GET /api/vehicles", s.vehicles)
 	mux.HandleFunc("POST /api/vehicles/{vin}/unlock", s.unlock)
 	mux.HandleFunc("POST /api/vehicles/{vin}/lock", s.lock)
@@ -111,6 +151,42 @@ func Listen(ctx context.Context, addr string, handler http.Handler) error {
 			return nil
 		}
 		return err
+	}
+}
+
+func (s *Server) clockHandler(w http.ResponseWriter, _ *http.Request) {
+	if s.clock == nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	snap := s.clock.Snapshot()
+	body := clockBody{
+		Simulated:  snap.Simulated.UTC().Format(time.RFC3339),
+		Real:       snap.Real.UTC().Format(time.RFC3339),
+		Rate:       snap.Rate,
+		Multiplier: snap.Multiplier,
+	}
+	if err := writeJSON(w, http.StatusOK, body); err != nil {
+		slog.Error("clock", "err", err)
+	}
+}
+
+func (s *Server) contractsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.contracts == nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	list, err := s.contracts.List(r.Context())
+	if err != nil {
+		slog.Error("contracts", "err", err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	if list == nil {
+		list = []book.Contract{}
+	}
+	if err := writeJSON(w, http.StatusOK, contractsBody{Contracts: list}); err != nil {
+		slog.Error("contracts", "err", err)
 	}
 }
 
@@ -239,6 +315,17 @@ func (s *Server) writeCommandError(w http.ResponseWriter, err error) {
 type commandBody struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+}
+
+type clockBody struct {
+	Simulated  string `json:"simulated"`
+	Real       string `json:"real"`
+	Rate       string `json:"rate"`
+	Multiplier int    `json:"multiplier"`
+}
+
+type contractsBody struct {
+	Contracts []book.Contract `json:"contracts"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) error {

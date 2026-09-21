@@ -3,6 +3,16 @@ INSERT INTO vehicles (vin, fleet, display_id, plate, model)
 VALUES ($1, 'rental', $2, $3, $4)
 ON CONFLICT (vin) DO NOTHING;
 
+-- name: InsertLeasingVehicle :exec
+INSERT INTO vehicles (vin, fleet, display_id, plate, model)
+VALUES ($1, 'leasing', $2, $3, $4)
+ON CONFLICT (vin) DO NOTHING;
+
+-- name: CountLeasingVehicles :one
+SELECT count(*)::bigint
+FROM vehicles
+WHERE fleet = 'leasing';
+
 -- name: GetRentalVehicle :one
 SELECT vin, fleet, display_id, plate, model
 FROM vehicles

@@ -171,6 +171,11 @@ func NewFleet() []Vehicle {
 	return fleet
 }
 
+// Seed is the process RNG seed from SIM_SEED (invalid or empty → default).
+func Seed() uint64 {
+	return processSeed()
+}
+
 func processSeed() uint64 {
 	raw := strings.TrimSpace(os.Getenv(envSimSeed))
 	if raw == "" {

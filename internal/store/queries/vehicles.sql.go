@@ -9,6 +9,19 @@ import (
 	"context"
 )
 
+const countLeasingVehicles = `-- name: CountLeasingVehicles :one
+SELECT count(*)::bigint
+FROM vehicles
+WHERE fleet = 'leasing'
+`
+
+func (q *Queries) CountLeasingVehicles(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countLeasingVehicles)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getRentalVehicle = `-- name: GetRentalVehicle :one
 SELECT vin, fleet, display_id, plate, model
 FROM vehicles
@@ -71,6 +84,29 @@ func (q *Queries) GetVehicleState(ctx context.Context, vin string) (GetVehicleSt
 		&i.Trip,
 	)
 	return i, err
+}
+
+const insertLeasingVehicle = `-- name: InsertLeasingVehicle :exec
+INSERT INTO vehicles (vin, fleet, display_id, plate, model)
+VALUES ($1, 'leasing', $2, $3, $4)
+ON CONFLICT (vin) DO NOTHING
+`
+
+type InsertLeasingVehicleParams struct {
+	Vin       string
+	DisplayID string
+	Plate     string
+	Model     string
+}
+
+func (q *Queries) InsertLeasingVehicle(ctx context.Context, arg InsertLeasingVehicleParams) error {
+	_, err := q.db.Exec(ctx, insertLeasingVehicle,
+		arg.Vin,
+		arg.DisplayID,
+		arg.Plate,
+		arg.Model,
+	)
+	return err
 }
 
 const insertRentalVehicle = `-- name: InsertRentalVehicle :exec
