@@ -1,0 +1,21 @@
+---
+description: Conventional commits with coherent scope, no agent trailers, explicit staging
+alwaysApply: true
+---
+
+# Commits
+
+Commits use `type(scope): description` with a coherent scope
+(`backend`, `frontend`, `infra`, etc.), without agent `Co-Authored-By`
+trailers. Stage explicit paths.
+
+- Format: `type(scope): description` (Conventional Commits).
+- Pick one coherent scope for the change, for example `backend`, `frontend`, or `infra`.
+- Do not add agent `Co-Authored-By` or `Co-authored-by` trailers.
+- Stage explicit paths only. Do not use `git add .` or `git add -A`.
+
+```text
+feat(backend): add unlock command queue
+fix(frontend): reconnect EventSource after drop
+chore(infra): pin MQTT broker version
+```
