@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  FREEZE_COPY,
   SNAPSHOT_ERROR,
+  STREAM_DOWN,
+  STREAM_LIVE,
+  commandsBlocked,
   connectTelemetry,
   loadSnapshot,
   sendCommand,
   type StreamSource,
+  type StreamStatus,
 } from './App';
 import { initialState, reducer, type Action, type FleetState, type Snapshot } from './state';
 
@@ -33,19 +38,19 @@ function snapshot(count = 20): Snapshot {
 class FakeEventSource implements StreamSource {
   readonly url: string;
   closed = false;
-  private readonly listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
+  private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
   constructor(url: string) {
     this.url = url;
   }
 
-  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+  addEventListener(type: string, listener: (event: Event) => void): void {
     const set = this.listeners.get(type) ?? new Set();
     set.add(listener);
     this.listeners.set(type, set);
   }
 
-  removeEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+  removeEventListener(type: string, listener: (event: Event) => void): void {
     this.listeners.get(type)?.delete(listener);
   }
 
@@ -140,6 +145,45 @@ describe('connectTelemetry', () => {
 
     cleanup();
     expect(created?.closed).toBe(true);
+  });
+
+  it('reports amber reconnect status and never exceeds 8 retries', () => {
+    const statuses: StreamStatus[] = [];
+    let created: FakeEventSource | undefined;
+    const cleanup = connectTelemetry(
+      () => undefined,
+      class extends FakeEventSource {
+        constructor(url: string) {
+          super(url);
+          created = this;
+        }
+      },
+      (status) => {
+        statuses.push(status);
+      },
+    );
+
+    created?.emit('error', '');
+    created?.emit('error', '');
+    expect(statuses).toEqual([
+      { live: false, retries: 1 },
+      { live: false, retries: 2 },
+    ]);
+    expect(STREAM_DOWN(2)).toBe('STREAM CAIU · RECONECTANDO (2/8)');
+    expect(STREAM_LIVE).not.toMatch(/vermelho|red|FALHOU/i);
+    expect(commandsBlocked(false)).toBe(true);
+    expect(commandsBlocked(true)).toBe(false);
+    expect(FREEZE_COPY(4)).toBe('Posições congeladas · último dado há 4s');
+
+    for (let i = 0; i < 20; i += 1) {
+      created?.emit('error', '');
+    }
+    expect(statuses.at(-1)).toEqual({ live: false, retries: 8 });
+
+    created?.emit('open', '');
+    expect(statuses.at(-1)).toEqual({ live: true, retries: 0 });
+
+    cleanup();
   });
 });
 
