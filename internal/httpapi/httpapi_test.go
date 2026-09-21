@@ -705,6 +705,18 @@ func TestHandler_SPAFallback(t *testing.T) {
 		t.Fatal("unknown path did not fall back to index.html")
 	}
 
+	for _, path := range []string{"/carteira", "/carteira/foo"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d", path, rec.Code, http.StatusOK)
+		}
+		if rec.Body.String() != homeRec.Body.String() {
+			t.Fatalf("GET %s did not fall back to index.html", path)
+		}
+	}
+
 	apiMiss := httptest.NewRequest(http.MethodGet, "/api/missing", nil)
 	apiRec := httptest.NewRecorder()
 	h.ServeHTTP(apiRec, apiMiss)
