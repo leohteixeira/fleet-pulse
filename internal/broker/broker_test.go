@@ -84,6 +84,7 @@ func TestBroker_IngestLogsPublishedTelemetry(t *testing.T) {
 			ctx,
 			b,
 			nopSink{},
+			nopAck{},
 			log,
 		)
 	}()
@@ -118,6 +119,38 @@ func TestBroker_IngestLogsPublishedTelemetry(t *testing.T) {
 	}
 }
 
+func TestBroker_PublishReachesSubscriber(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	b := broker.New("127.0.0.1:0", nil)
+	if err := b.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	got := make(chan []byte, 1)
+	if err := b.Subscribe(ctx, "fleet/+/commands", func(_ string, payload []byte) {
+		got <- append([]byte(nil), payload...)
+	}); err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	payload := []byte(`{"id":"cmd-1","action":"unlock","correlationId":"corr-1"}`)
+	if err := b.Publish(ctx, "fleet/TESTVIN000000001/commands", payload); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	select {
+	case msg := <-got:
+		if !bytes.Equal(msg, payload) {
+			t.Fatalf("payload = %s, want %s", msg, payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber did not receive published command")
+	}
+}
+
 func TestBroker_StartListensOnTCP(t *testing.T) {
 	t.Parallel()
 
@@ -137,6 +170,10 @@ func TestBroker_StartListensOnTCP(t *testing.T) {
 type nopSink struct{}
 
 func (nopSink) Apply(ingest.Telemetry) {}
+
+type nopAck struct{}
+
+func (nopAck) Apply(string, bool) {}
 
 type syncBuffer struct {
 	mu sync.Mutex

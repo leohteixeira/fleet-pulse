@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/leohteixeira/fleet-pulse/internal/broker"
 )
 
 func TestNewFleet(t *testing.T) {
@@ -137,7 +140,7 @@ func TestPublishLoop_Period(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() {
-			done <- publishLoop(ctx, vehicle, PublishInterval, pub)
+			done <- publishLoop(ctx, vehicle, PublishInterval, pub, nil)
 		}()
 
 		time.Sleep(4 * time.Second)
@@ -174,10 +177,157 @@ func TestPublishLoop_Period(t *testing.T) {
 	})
 }
 
+func TestRunVehicle_AcksOverMQTT(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	b := broker.New("127.0.0.1:0", nil)
+	if err := b.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	acks := make(chan []byte, 1)
+	if err := b.Subscribe(ctx, "fleet/+/ack", func(_ string, payload []byte) {
+		acks <- append([]byte(nil), payload...)
+	}); err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	vehicle := NewFleet()[0]
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- runFleet(runCtx, b.DialAddr(), []Vehicle{vehicle}, time.Hour, dialPaho)
+	}()
+
+	payload := []byte(`{"id":"cmd-mqtt","action":"unlock","correlationId":"corr-mqtt"}`)
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		lastErr = b.Publish(ctx, CommandTopic(vehicle.VIN), payload)
+		select {
+		case got := <-acks:
+			var body struct {
+				CommandID string `json:"commandId"`
+				OK        bool   `json:"ok"`
+			}
+			if err := json.Unmarshal(got, &body); err != nil {
+				t.Fatalf("ack json: %v", err)
+			}
+			if body.CommandID != "cmd-mqtt" || !body.OK {
+				t.Fatalf("ack = %+v, want commandId=cmd-mqtt ok=true", body)
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatalf("runFleet() error = %v", err)
+			}
+			return
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+	t.Fatalf("did not receive ack (last publish err %v)", lastErr)
+}
+
+func TestRunVehicle_SubscribesAndAcks(t *testing.T) {
+	t.Parallel()
+
+	client := &recordingClient{}
+	dial := func(_ context.Context, _, _ string) (mqttClient, error) {
+		return client, nil
+	}
+
+	vehicle := NewFleet()[0]
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runFleet(ctx, "127.0.0.1:1883", []Vehicle{vehicle}, time.Hour, dial)
+	}()
+
+	waitFor(t, time.Second, func() bool {
+		return client.subTopic() == CommandTopic(vehicle.VIN)
+	})
+
+	client.deliver([]byte(`{"id":"cmd-1","action":"unlock","correlationId":"corr-1"}`))
+	waitFor(t, time.Second, func() bool {
+		return client.hasAck("cmd-1")
+	})
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("runFleet() error = %v", err)
+	}
+}
+
 type stubClient struct{}
 
 func (stubClient) Publish(context.Context, string, []byte) error { return nil }
-func (stubClient) Disconnect(context.Context) error              { return nil }
+func (stubClient) Subscribe(context.Context, string, func([]byte)) error {
+	return nil
+}
+func (stubClient) Disconnect(context.Context) error { return nil }
+
+type recordingClient struct {
+	mu       sync.Mutex
+	topic    string
+	handler  func([]byte)
+	payloads [][]byte
+	topics   []string
+}
+
+func (c *recordingClient) Subscribe(_ context.Context, topic string, handler func([]byte)) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.topic = topic
+	c.handler = handler
+	return nil
+}
+
+func (c *recordingClient) Publish(_ context.Context, topic string, payload []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.topics = append(c.topics, topic)
+	c.payloads = append(c.payloads, append([]byte(nil), payload...))
+	return nil
+}
+
+func (c *recordingClient) Disconnect(context.Context) error { return nil }
+
+func (c *recordingClient) deliver(payload []byte) {
+	c.mu.Lock()
+	h := c.handler
+	c.mu.Unlock()
+	if h != nil {
+		h(payload)
+	}
+}
+
+func (c *recordingClient) subTopic() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.topic
+}
+
+func (c *recordingClient) hasAck(commandID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, topic := range c.topics {
+		if !strings.HasSuffix(topic, "/ack") {
+			continue
+		}
+		var body struct {
+			CommandID string `json:"commandId"`
+			OK        bool   `json:"ok"`
+		}
+		if json.Unmarshal(c.payloads[i], &body) == nil && body.CommandID == commandID && body.OK {
+			return true
+		}
+	}
+	return false
+}
 
 type publisherFunc func(ctx context.Context, topic string, payload []byte) error
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
 )
@@ -14,6 +15,25 @@ import (
 type recordingSink struct {
 	mu  sync.Mutex
 	got []ingest.Telemetry
+}
+
+type recordingAcks struct {
+	mu  sync.Mutex
+	ids []string
+	oks []bool
+}
+
+func (r *recordingAcks) Apply(commandID string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, commandID)
+	r.oks = append(r.oks, ok)
+}
+
+func (r *recordingAcks) applied() (ids []string, oks []bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ids...), append([]bool(nil), r.oks...)
 }
 
 func (r *recordingSink) Apply(t ingest.Telemetry) {
@@ -32,21 +52,27 @@ func (r *recordingSink) applied() []ingest.Telemetry {
 
 type fakeSub struct {
 	mu         sync.Mutex
-	handler    ingest.MessageHandler
+	handlers   map[string]ingest.MessageHandler
 	subscribed chan struct{}
-	filter     string
+	filters    []string
 }
 
 func newFakeSub() *fakeSub {
-	return &fakeSub{subscribed: make(chan struct{})}
+	return &fakeSub{
+		subscribed: make(chan struct{}),
+		handlers:   make(map[string]ingest.MessageHandler),
+	}
 }
 
 func (f *fakeSub) Subscribe(_ context.Context, filter string, handler ingest.MessageHandler) error {
 	f.mu.Lock()
-	f.filter = filter
-	f.handler = handler
+	f.filters = append(f.filters, filter)
+	f.handlers[filter] = handler
+	first := len(f.filters) == 1
 	f.mu.Unlock()
-	close(f.subscribed)
+	if first {
+		close(f.subscribed)
+	}
 	return nil
 }
 
@@ -54,11 +80,22 @@ func (f *fakeSub) Unsubscribe(context.Context, string) error {
 	return nil
 }
 
-func (f *fakeSub) deliver(topic string, payload []byte) {
+func (f *fakeSub) deliver(filter, topic string, payload []byte) {
 	f.mu.Lock()
-	h := f.handler
+	h := f.handlers[filter]
 	f.mu.Unlock()
 	h(topic, payload)
+}
+
+func (f *fakeSub) hasFilter(want string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, filter := range f.filters {
+		if filter == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRun(t *testing.T) {
@@ -110,16 +147,12 @@ func TestRun(t *testing.T) {
 			log := slog.New(slog.NewJSONHandler(&buf, nil))
 			sub := newFakeSub()
 			sink := &recordingSink{}
+			acks := &recordingAcks{}
 
 			ctx, cancel := context.WithCancel(t.Context())
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- ingest.Run(
-					ctx,
-					sub,
-					sink,
-					log,
-				)
+				errCh <- ingest.Run(ctx, sub, sink, acks, log)
 			}()
 
 			select {
@@ -127,11 +160,11 @@ func TestRun(t *testing.T) {
 			case err := <-errCh:
 				t.Fatalf("run ended before subscribe: %v", err)
 			}
-			if sub.filter != ingest.TelemetryFilter {
-				t.Fatalf("filter = %q, want %q", sub.filter, ingest.TelemetryFilter)
-			}
+			waitFor(t, func() bool {
+				return sub.hasFilter(ingest.TelemetryFilter) && sub.hasFilter(ingest.AckFilter)
+			})
 
-			sub.deliver(tt.topic, tt.payload)
+			sub.deliver(ingest.TelemetryFilter, tt.topic, tt.payload)
 			cancel()
 
 			if err := <-errCh; err != nil {
@@ -183,4 +216,113 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRun_Ack(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		payload      []byte
+		wantIDs      []string
+		wantOKs      []bool
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{
+			name:         "accepted",
+			payload:      []byte(`{"commandId":"cmd-1","ok":true}`),
+			wantIDs:      []string{"cmd-1"},
+			wantOKs:      []bool{true},
+			wantContains: []string{},
+		},
+		{
+			name:         "refused",
+			payload:      []byte(`{"commandId":"cmd-2","ok":false}`),
+			wantIDs:      []string{"cmd-2"},
+			wantOKs:      []bool{false},
+			wantContains: []string{},
+		},
+		{
+			name:         "bad json skipped",
+			payload:      []byte(`not-json`),
+			wantContains: []string{`"msg":"skipping ack"`},
+			wantAbsent:   []string{`"msg":"telemetry"`},
+		},
+		{
+			name:         "missing command id skipped",
+			payload:      []byte(`{"ok":true}`),
+			wantContains: []string{`"msg":"skipping ack"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&buf, nil))
+			sub := newFakeSub()
+			sink := &recordingSink{}
+			acks := &recordingAcks{}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- ingest.Run(ctx, sub, sink, acks, log)
+			}()
+
+			select {
+			case <-sub.subscribed:
+			case err := <-errCh:
+				t.Fatalf("run ended before subscribe: %v", err)
+			}
+			waitFor(t, func() bool {
+				return sub.hasFilter(ingest.AckFilter)
+			})
+
+			sub.deliver(ingest.AckFilter, "fleet/FPULSESAO00000001/ack", tt.payload)
+			cancel()
+			if err := <-errCh; err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			ids, oks := acks.applied()
+			if len(ids) != len(tt.wantIDs) {
+				t.Fatalf("applied ids = %v, want %v", ids, tt.wantIDs)
+			}
+			for i, id := range tt.wantIDs {
+				if ids[i] != id || oks[i] != tt.wantOKs[i] {
+					t.Fatalf("applied[%d] = %s/%v, want %s/%v", i, ids[i], oks[i], id, tt.wantOKs[i])
+				}
+			}
+
+			got := buf.String()
+			for _, want := range tt.wantContains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("log missing %q in %s", want, got)
+				}
+			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Fatalf("log unexpectedly contains %q in %s", absent, got)
+				}
+			}
+			if len(sink.applied()) != 0 {
+				t.Fatalf("telemetry sink applied = %+v, want none", sink.applied())
+			}
+		})
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for subscribe")
 }

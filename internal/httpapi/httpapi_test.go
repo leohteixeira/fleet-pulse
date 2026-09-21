@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
@@ -40,7 +42,7 @@ func seededSnapshot() store.Snapshot {
 func TestHandler_Snapshot(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub()).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/api/vehicles", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -79,7 +81,7 @@ func TestHandler_Snapshot(t *testing.T) {
 func TestHandler_Healthz(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{}, httpapi.NewHub()).Handler()
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -91,7 +93,7 @@ func TestHandler_Healthz(t *testing.T) {
 func TestHandler_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub()).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/vehicles", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -104,7 +106,7 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	srv := httptest.NewServer(httpapi.New(fakeStore{snap: seededSnapshot()}, hub).Handler())
+	srv := httptest.NewServer(httpapi.New(fakeStore{snap: seededSnapshot()}, hub, nil).Handler())
 	t.Cleanup(srv.Close)
 
 	ctx := t.Context()
@@ -145,6 +147,215 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	}
 	if !strings.Contains(got.data, `"vin":"FPULSESAO00000001"`) {
 		t.Fatalf("data %q missing vin", got.data)
+	}
+}
+
+func TestHandler_Unlock(t *testing.T) {
+	t.Parallel()
+
+	const vin = "FPULSESAO00000001"
+
+	tests := []struct {
+		name       string
+		vin        string
+		key        string
+		unlocker   *fakeUnlocker
+		wantStatus int
+		wantID     string
+		wantState  string
+	}{
+		{
+			name: "accepted",
+			vin:  vin,
+			key:  "k1",
+			unlocker: &fakeUnlocker{
+				rec: command.Record{ID: "cmd-1", State: command.StateSent, VIN: vin},
+			},
+			wantStatus: http.StatusAccepted,
+			wantID:     "cmd-1",
+			wantState:  command.StateSent,
+		},
+		{
+			name:       "missing key",
+			vin:        vin,
+			key:        "",
+			unlocker:   &fakeUnlocker{err: command.ErrMissingKey},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown vin",
+			vin:        "UNKNOWN",
+			key:        "k1",
+			unlocker:   &fakeUnlocker{err: command.ErrUnknownVIN},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "in-flight conflict",
+			vin:  vin,
+			key:  "other",
+			unlocker: &fakeUnlocker{err: &command.ConflictError{
+				Current: command.Record{ID: "cmd-1", State: command.StateSent},
+			}},
+			wantStatus: http.StatusConflict,
+			wantID:     "cmd-1",
+			wantState:  command.StateSent,
+		},
+		{
+			name: "publish failure still 202",
+			vin:  vin,
+			key:  "k-fail",
+			unlocker: &fakeUnlocker{
+				rec: command.Record{ID: "cmd-fail", State: command.StateFailed, VIN: vin},
+				err: fmt.Errorf("publish command: broker down"),
+			},
+			wantStatus: http.StatusAccepted,
+			wantID:     "cmd-fail",
+			wantState:  command.StateFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), tt.unlocker).Handler()
+			req := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+tt.vin+"/unlock", nil)
+			if tt.key != "" {
+				req.Header.Set("Idempotency-Key", tt.key)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if tt.unlocker.key != tt.key {
+				t.Fatalf("unlocker key = %q, want %q", tt.unlocker.key, tt.key)
+			}
+			if tt.wantID == "" {
+				return
+			}
+			var body struct {
+				ID    string `json:"id"`
+				State string `json:"state"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.ID != tt.wantID || body.State != tt.wantState {
+				t.Fatalf("body = %+v, want id=%s state=%s", body, tt.wantID, tt.wantState)
+			}
+			if tt.unlocker.vin != tt.vin || tt.unlocker.key != tt.key {
+				t.Fatalf("unlocker got vin=%q key=%q", tt.unlocker.vin, tt.unlocker.key)
+			}
+		})
+	}
+}
+
+func TestHandler_UnlockWithMachine(t *testing.T) {
+	t.Parallel()
+
+	mem := store.New()
+	mem.Seed([]store.Vehicle{{VIN: "FPULSESAO00000001", DisplayID: "V01"}})
+	pub := &ackPublisher{}
+	svc := command.New(pub, mem, nil)
+	pub.svc = svc
+	h := httpapi.New(mem, httpapi.NewHub(), svc).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/unlock", nil)
+	req.Header.Set("Idempotency-Key", "machine-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusAccepted, rec.Body.Bytes())
+	}
+	var created struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("missing command id")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/commands/"+created.ID, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got command.Record
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode record: %v", err)
+	}
+	if got.State != command.StateAcked {
+		t.Fatalf("state = %q, want ACKED", got.State)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/unlock", nil)
+	req.Header.Set("Idempotency-Key", "machine-1")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var replay struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay: %v", err)
+	}
+	if replay.ID != created.ID {
+		t.Fatalf("replay id = %q, want %q", replay.ID, created.ID)
+	}
+}
+
+type ackPublisher struct {
+	svc *command.Service
+}
+
+func (a *ackPublisher) Publish(_ context.Context, _ string, payload []byte) error {
+	var cmd struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &cmd); err != nil {
+		return err
+	}
+	if a.svc != nil {
+		a.svc.Apply(cmd.ID, true)
+	}
+	return nil
+}
+
+func TestHandler_GetCommand(t *testing.T) {
+	t.Parallel()
+
+	unlocker := &fakeUnlocker{rec: command.Record{
+		ID:            "cmd-1",
+		VIN:           "FPULSESAO00000001",
+		Action:        command.ActionUnlock,
+		State:         command.StateAcked,
+		CorrelationID: "corr-1",
+	}}
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), unlocker).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commands/cmd-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body command.Record
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ID != "cmd-1" || body.State != command.StateAcked || body.CorrelationID != "corr-1" {
+		t.Fatalf("body = %+v", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/commands/missing", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 
@@ -191,6 +402,26 @@ func TestHub_DropOldest(t *testing.T) {
 			return
 		}
 	}
+}
+
+type fakeUnlocker struct {
+	rec command.Record
+	err error
+	vin string
+	key string
+}
+
+func (f *fakeUnlocker) Unlock(_ context.Context, vin, key string) (command.Record, error) {
+	f.vin = vin
+	f.key = key
+	return f.rec, f.err
+}
+
+func (f *fakeUnlocker) Get(id string) (command.Record, bool) {
+	if f.rec.ID == id {
+		return f.rec, true
+	}
+	return command.Record{}, false
 }
 
 type sseFrame struct {

@@ -40,6 +40,22 @@ func TestMemory_SeedSnapshotAndApply(t *testing.T) {
 		}
 	})
 
+	t.Run("has reports seeded vins", func(t *testing.T) {
+		t.Parallel()
+
+		mem := store.New()
+		mem.Seed(rosterFromSim(sim.NewFleet()))
+		if !mem.Has(sim.OfflineVIN) {
+			t.Fatalf("Has(%q) = false, want true", sim.OfflineVIN)
+		}
+		if mem.Has("UNKNOWN") {
+			t.Fatal("Has(UNKNOWN) = true, want false")
+		}
+		if mem.Has("") {
+			t.Fatal("Has(\"\") = true, want false")
+		}
+	})
+
 	t.Run("apply updates lat and lng", func(t *testing.T) {
 		t.Parallel()
 

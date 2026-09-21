@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -8,6 +9,40 @@ import (
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
+
+func TestReadySub_SignalsAfterN(t *testing.T) {
+	t.Parallel()
+
+	ready := newReadySub(nopSub{}, 2)
+	if err := ready.Subscribe(t.Context(), "fleet/+/telemetry", nil); err != nil {
+		t.Fatalf("first Subscribe() error = %v", err)
+	}
+	select {
+	case err := <-ready.done:
+		t.Fatalf("done signaled after first subscribe: %v", err)
+	default:
+	}
+
+	if err := ready.Subscribe(t.Context(), "fleet/+/ack", nil); err != nil {
+		t.Fatalf("second Subscribe() error = %v", err)
+	}
+	select {
+	case err := <-ready.done:
+		if err != nil {
+			t.Fatalf("done = %v, want nil", err)
+		}
+	default:
+		t.Fatal("done not signaled after second subscribe")
+	}
+}
+
+type nopSub struct{}
+
+func (nopSub) Subscribe(context.Context, string, ingest.MessageHandler) error {
+	return nil
+}
+
+func (nopSub) Unsubscribe(context.Context, string) error { return nil }
 
 func TestTelemetrySink_Apply(t *testing.T) {
 	t.Parallel()
