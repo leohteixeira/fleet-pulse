@@ -10,7 +10,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/book"
+	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
@@ -83,6 +86,141 @@ func TestHandler_Snapshot(t *testing.T) {
 	}
 	if !hasOffline {
 		t.Fatalf("snapshot missing offline vin %q", sim.OfflineVIN)
+	}
+}
+
+func TestHandler_ClockDefaultAndRate(t *testing.T) {
+	t.Parallel()
+
+	originSim := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	originReal := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		clk      *clock.Clock
+		wantRate string
+		wantMult int
+	}{
+		{
+			name:     "default 4h/s",
+			clk:      clock.Fixed(clock.ParseRate(""), originSim, originReal),
+			wantRate: clock.Rate4h,
+			wantMult: 14400,
+		},
+		{
+			name:     "12h/s",
+			clk:      clock.Fixed(clock.ParseRate(clock.Rate12h), originSim, originReal),
+			wantRate: clock.Rate12h,
+			wantMult: 43200,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil, nil, httpapi.WithClock(tt.clk)).Handler()
+			req := httptest.NewRequest(http.MethodGet, "/api/clock", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			var body struct {
+				Simulated  string `json:"simulated"`
+				Real       string `json:"real"`
+				Rate       string `json:"rate"`
+				Multiplier int    `json:"multiplier"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Rate != tt.wantRate || body.Multiplier != tt.wantMult {
+				t.Fatalf("rate = %s ×%d, want %s ×%d", body.Rate, body.Multiplier, tt.wantRate, tt.wantMult)
+			}
+			wantSim := originSim.UTC().Format(time.RFC3339)
+			wantReal := originReal.UTC().Format(time.RFC3339)
+			if body.Simulated != wantSim || body.Real != wantReal {
+				t.Fatalf("times = sim %q real %q, want %q and %q", body.Simulated, body.Real, wantSim, wantReal)
+			}
+		})
+	}
+}
+
+func TestHandler_Contracts(t *testing.T) {
+	t.Parallel()
+
+	list := []book.Contract{
+		{
+			ID:           "c1",
+			VIN:          "FPULSELSG00000001",
+			ClientName:   "Ana Costa",
+			PayerProfile: book.ProfilePontual,
+			DaysLate:     0,
+			OverdueBand:  book.BandEmDia,
+		},
+	}
+	h := httpapi.New(
+		fakeStore{snap: seededSnapshot()},
+		httpapi.NewHub(),
+		nil,
+		nil,
+		httpapi.WithContracts(fakeContracts{list: list}),
+	).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Contracts []book.Contract `json:"contracts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Contracts) != 1 {
+		t.Fatalf("len(contracts) = %d, want 1", len(body.Contracts))
+	}
+	got := body.Contracts[0]
+	if got.ID != "c1" ||
+		got.VIN != "FPULSELSG00000001" ||
+		got.ClientName != "Ana Costa" ||
+		got.PayerProfile != book.ProfilePontual ||
+		got.DaysLate != 0 ||
+		got.OverdueBand != book.BandEmDia {
+		t.Fatalf("contract = %+v, want id=c1 Ana Costa pontual 0 em_dia", got)
+	}
+	if strings.HasPrefix(got.VIN, "FPULSESAO") {
+		t.Fatal("contracts listed a rental vin")
+	}
+}
+
+func TestHandler_VehiclesStillRentalAfterBookPort(t *testing.T) {
+	t.Parallel()
+
+	h := httpapi.New(
+		fakeStore{snap: seededSnapshot()},
+		httpapi.NewHub(),
+		nil,
+		nil,
+		httpapi.WithContracts(fakeContracts{list: []book.Contract{{
+			VIN: "FPULSELSG00000001",
+		}}}),
+	).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/vehicles", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var snap store.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(snap.Vehicles) != sim.FleetSize {
+		t.Fatalf("len(vehicles) = %d, want %d", len(snap.Vehicles), sim.FleetSize)
+	}
+	for _, v := range snap.Vehicles {
+		if strings.HasPrefix(v.VIN, "FPULSELSG") {
+			t.Fatalf("snapshot contains leasing vin %q", v.VIN)
+		}
 	}
 }
 
@@ -556,6 +694,18 @@ func TestHub_DropOldest(t *testing.T) {
 			return
 		}
 	}
+}
+
+type fakeContracts struct {
+	list []book.Contract
+	err  error
+}
+
+func (f fakeContracts) List(context.Context) ([]book.Contract, error) {
+	if f.list == nil {
+		return []book.Contract{}, f.err
+	}
+	return f.list, f.err
 }
 
 type fakeUnlocker struct {

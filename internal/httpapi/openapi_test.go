@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestOpenAPI_SixEndpoints(t *testing.T) {
+func TestOpenAPI_DocumentedPaths(t *testing.T) {
 	t.Parallel()
 
 	_, file, _, ok := runtime.Caller(0)
@@ -21,6 +21,8 @@ func TestOpenAPI_SixEndpoints(t *testing.T) {
 	}
 	text := string(body)
 	for _, path := range []string{
+		"/api/clock:",
+		"/api/contracts:",
 		"/api/vehicles:",
 		"/api/stream:",
 		"/api/vehicles/{vin}/unlock:",
