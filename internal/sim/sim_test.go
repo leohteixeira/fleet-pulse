@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/leohteixeira/fleet-pulse/internal/broker"
+	"github.com/leohteixeira/fleet-pulse/internal/roads"
 )
 
 func TestNewFleet(t *testing.T) {
@@ -403,7 +404,7 @@ func TestPublishLoop_WanderCrossesCentro(t *testing.T) {
 			done <- publishLoop(ctx, wander, PublishInterval, pub, nil)
 		}()
 
-		time.Sleep(12 * time.Second)
+		time.Sleep(28 * time.Second)
 		synctest.Wait()
 		cancel()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
@@ -433,18 +434,22 @@ func TestStepVehicle_MovesInUseAndHoldsParked(t *testing.T) {
 	}
 
 	moving := Vehicle{VIN: "FPULSESAO00000001", Lat: CentroLat, Lng: CentroLng, Speed: 36, Ignition: true, Heading: 0}
-	advance(&moving, time.Hour)
-	if moving.Lat <= CentroLat {
-		t.Fatalf("northbound lat = %v, want greater than %v", moving.Lat, CentroLat)
+	stepVehicle(&moving)
+	if moving.Lat == CentroLat && moving.Lng == CentroLng {
+		t.Fatal("in-use vehicle did not move")
 	}
-	if moving.Odometer <= 0 || moving.Trip <= 0 {
-		t.Fatalf("odometer/trip = %v/%v, want distance added", moving.Odometer, moving.Trip)
+	snapped := roads.Default().Snap(moving.Lat, moving.Lng)
+	if d := roads.Distance(moving.Lat, moving.Lng, snapped.Lat, snapped.Lng); d >= 15 {
+		t.Fatalf("in-use vehicle is %.1fm from nearest edge, want < 15", d)
 	}
 
 	west := Vehicle{VIN: WanderVIN, Lat: CentroLat, Lng: CentroLng}
 	stepVehicle(&west)
-	if west.Lng >= CentroLng || west.Heading != 270 {
-		t.Fatalf("wander = lng %v heading %d, want west", west.Lng, west.Heading)
+	if west.Lng >= CentroLng {
+		t.Fatalf("wander lng = %v, want less than %v", west.Lng, CentroLng)
+	}
+	if west.Heading < 180 {
+		t.Fatalf("wander heading = %d, want west quadrant 180-360", west.Heading)
 	}
 }
 
