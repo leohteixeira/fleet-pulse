@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
@@ -25,6 +26,9 @@ func TestMemory_SeedSnapshotAndApply(t *testing.T) {
 		for _, v := range snap.Vehicles {
 			if v.VIN == "" || v.DisplayID == "" {
 				t.Fatalf("vehicle missing vin or displayId: %+v", v)
+			}
+			if strings.HasPrefix(v.VIN, "FPULSELSG") {
+				t.Fatalf("snapshot contains leasing vin %q", v.VIN)
 			}
 		}
 	})

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leohteixeira/fleet-pulse/internal/broker"
 	"github.com/leohteixeira/fleet-pulse/internal/roads"
+	"github.com/leohteixeira/fleet-pulse/internal/routes"
 )
 
 func TestNewFleet(t *testing.T) {
@@ -47,6 +48,9 @@ func TestNewFleet(t *testing.T) {
 		}
 		if v.DisplayID != fmt.Sprintf("V%02d", i+1) {
 			t.Fatalf("displayId = %q, want V%02d", v.DisplayID, i+1)
+		}
+		if v.RouteID == "" {
+			t.Fatalf("vehicle %s missing first route id", v.VIN)
 		}
 		if abs(v.Lat-CentroLat) > 0.03 || abs(v.Lng-CentroLng) > 0.04 {
 			t.Fatalf("vehicle %s spawn (%v,%v) is not around Centro", v.VIN, v.Lat, v.Lng)
@@ -117,6 +121,71 @@ func TestRunFleet_SkipsOfflineVIN(t *testing.T) {
 		if id == OfflineVIN {
 			t.Fatal("offline vin connected")
 		}
+	}
+}
+
+func TestRun_StartsBothFleets(t *testing.T) {
+	t.Parallel()
+
+	roster := append(append([]Vehicle{}, NewFleet()...), NewLeasingFleet()...)
+	var hasFleet, hasLeasing bool
+	for _, v := range roster {
+		if v.IsOffline {
+			continue
+		}
+		if v.Prefix == PrefixFleet {
+			hasFleet = true
+		}
+		if v.Prefix == PrefixLeasing {
+			hasLeasing = true
+		}
+	}
+	if !hasFleet || !hasLeasing {
+		t.Fatalf("roster prefixes fleet=%v leasing=%v, want both online", hasFleet, hasLeasing)
+	}
+
+	var (
+		mu     sync.Mutex
+		dialed []string
+	)
+	dial := func(_ context.Context, _, clientID string) (mqttClient, error) {
+		mu.Lock()
+		dialed = append(dialed, clientID)
+		mu.Unlock()
+		return &stubClient{}, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runFleet(ctx, "127.0.0.1:1883", roster, time.Hour, dial)
+	}()
+
+	want := FleetSize - 1 + LeasingSize
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(dialed) == want
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("runFleet() error = %v", err)
+	}
+
+	var dialedFleet, dialedLeasing bool
+	for _, id := range dialed {
+		if id == OfflineVIN {
+			t.Fatal("offline vin connected")
+		}
+		if strings.HasPrefix(id, "FPULSESAO") {
+			dialedFleet = true
+		}
+		if strings.HasPrefix(id, leasingVIN) {
+			dialedLeasing = true
+		}
+	}
+	if !dialedFleet || !dialedLeasing {
+		t.Fatalf("dialed fleet=%v leasing=%v, want both", dialedFleet, dialedLeasing)
 	}
 }
 
@@ -438,9 +507,8 @@ func TestStepVehicle_MovesInUseAndHoldsParked(t *testing.T) {
 	if moving.Lat == CentroLat && moving.Lng == CentroLng {
 		t.Fatal("in-use vehicle did not move")
 	}
-	snapped := roads.Default().Snap(moving.Lat, moving.Lng)
-	if d := roads.Distance(moving.Lat, moving.Lng, snapped.Lat, snapped.Lng); d >= 15 {
-		t.Fatalf("in-use vehicle is %.1fm from nearest edge, want < 15", d)
+	if !nearLibraryRoute(moving.Lat, moving.Lng) {
+		t.Fatalf("in-use vehicle (%v,%v) is not on the route library", moving.Lat, moving.Lng)
 	}
 
 	west := Vehicle{VIN: WanderVIN, Lat: CentroLat, Lng: CentroLng}
@@ -475,6 +543,262 @@ func TestNewFleet_ParkedHaveNoSpeed(t *testing.T) {
 	if moving < 10 {
 		t.Fatalf("moving vehicles = %d, want a live fleet", moving)
 	}
+}
+
+func TestNewLeasingFleet(t *testing.T) {
+	t.Parallel()
+
+	fleet := NewLeasingFleet()
+	if len(fleet) != LeasingSize {
+		t.Fatalf("len(fleet) = %d, want %d", len(fleet), LeasingSize)
+	}
+	seen := make(map[string]struct{}, len(fleet))
+	for _, v := range fleet {
+		if _, ok := seen[v.VIN]; ok {
+			t.Fatalf("duplicate vin %q", v.VIN)
+		}
+		seen[v.VIN] = struct{}{}
+		if !strings.HasPrefix(v.VIN, leasingVIN) {
+			t.Fatalf("vin %q, want prefix %s", v.VIN, leasingVIN)
+		}
+		if strings.HasPrefix(v.VIN, "FPULSESAO") {
+			t.Fatalf("leasing vin %q uses rental prefix", v.VIN)
+		}
+		if v.Prefix != PrefixLeasing {
+			t.Fatalf("prefix = %q, want %s", v.Prefix, PrefixLeasing)
+		}
+		if v.RouteID == "" {
+			t.Fatalf("%s missing first route id", v.VIN)
+		}
+		if v.IsOffline {
+			t.Fatalf("%s unexpectedly offline", v.VIN)
+		}
+		if !routes.InBounds(v.Lat, v.Lng) {
+			t.Fatalf("%s spawn (%v,%v) outside greater sp", v.VIN, v.Lat, v.Lng)
+		}
+	}
+}
+
+func TestNewFleet_NoLeasingVINs(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range NewFleet() {
+		if strings.HasPrefix(v.VIN, leasingVIN) || v.Prefix == PrefixLeasing {
+			t.Fatalf("rental roster contains leasing vehicle %s", v.VIN)
+		}
+		if v.Prefix != PrefixFleet && v.Prefix != "" {
+			t.Fatalf("%s prefix = %q, want %s", v.VIN, v.Prefix, PrefixFleet)
+		}
+	}
+}
+
+func TestNewFleets_ReproducibleSeed(t *testing.T) {
+	t.Setenv("SIM_SEED", "1")
+
+	first := NewLeasingFleet()
+	second := NewLeasingFleet()
+	if len(first) == 0 {
+		t.Fatal("empty leasing fleet")
+	}
+	for i := range first {
+		if first[i].RouteID != second[i].RouteID {
+			t.Fatalf("leasing[%d] route %q vs %q", i, first[i].RouteID, second[i].RouteID)
+		}
+	}
+
+	ra := NewFleet()
+	rb := NewFleet()
+	for i := range ra {
+		if ra[i].RouteID != rb[i].RouteID {
+			t.Fatalf("rental[%d] route %q vs %q", i, ra[i].RouteID, rb[i].RouteID)
+		}
+	}
+
+	t.Setenv("SIM_SEED", "2")
+	otherLease := NewLeasingFleet()
+	otherRent := NewFleet()
+	leaseDiff, rentDiff := false, false
+	for i := range first {
+		if first[i].RouteID != otherLease[i].RouteID {
+			leaseDiff = true
+			break
+		}
+	}
+	for i := range ra {
+		if ra[i].RouteID != otherRent[i].RouteID {
+			rentDiff = true
+			break
+		}
+	}
+	if !leaseDiff || !rentDiff {
+		t.Fatalf("SIM_SEED=1 and SIM_SEED=2 assigned the same first routes (leaseDiff=%v rentDiff=%v)", leaseDiff, rentDiff)
+	}
+
+	t.Setenv("SIM_SEED", "")
+	unsetA := NewLeasingFleet()
+	unsetB := NewLeasingFleet()
+	for i := range unsetA {
+		if unsetA[i].RouteID != unsetB[i].RouteID {
+			t.Fatalf("unset seed leasing[%d] route %q vs %q", i, unsetA[i].RouteID, unsetB[i].RouteID)
+		}
+	}
+	unsetRA := NewFleet()
+	unsetRB := NewFleet()
+	for i := range unsetRA {
+		if unsetRA[i].RouteID != unsetRB[i].RouteID {
+			t.Fatalf("unset seed rental[%d] route %q vs %q", i, unsetRA[i].RouteID, unsetRB[i].RouteID)
+		}
+	}
+}
+
+func TestVehicle_RefuseBlock(t *testing.T) {
+	t.Setenv("SIM_SEED", "1")
+
+	v := NewLeasingFleet()[0]
+	const n = 10_000
+	var hits int
+	for range n {
+		if v.RefuseBlock() {
+			hits++
+		}
+	}
+	rate := float64(hits) / float64(n)
+	if rate < 0.10 || rate > 0.20 {
+		t.Fatalf("refuse rate = %.3f, want between 0.10 and 0.20", rate)
+	}
+}
+
+func TestPublishLoop_Incidents(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("SIM_SEED", "1")
+		vehicle := NewLeasingFleet()[0]
+		var (
+			mu        sync.Mutex
+			count     int
+			batteries []int
+		)
+		pub := publisherFunc(func(_ context.Context, _ string, payload []byte) error {
+			var point struct {
+				Battery int `json:"battery"`
+			}
+			if err := json.Unmarshal(payload, &point); err != nil {
+				t.Errorf("payload: %v", err)
+				return err
+			}
+			mu.Lock()
+			count++
+			batteries = append(batteries, point.Battery)
+			mu.Unlock()
+			return nil
+		})
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			done <- publishLoop(ctx, vehicle, PublishInterval, pub, nil)
+		}()
+
+		time.Sleep(24 * time.Second)
+		synctest.Wait()
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("publishLoop() error = %v", err)
+		}
+
+		low := false
+		for _, b := range batteries {
+			if b <= 15 {
+				low = true
+				break
+			}
+		}
+		if count >= 13 && !low {
+			t.Fatalf("publishes = %d batteries = %v, want a skipped publish or battery ≤15", count, batteries)
+		}
+	})
+}
+
+func TestRunVehicle_LeasingTopics(t *testing.T) {
+	t.Parallel()
+
+	client := &recordingClient{}
+	dial := func(_ context.Context, _, _ string) (mqttClient, error) {
+		return client, nil
+	}
+
+	vehicle := NewLeasingFleet()[0]
+	vehicle.refuse = func() bool { return false }
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runFleet(ctx, "127.0.0.1:1883", []Vehicle{vehicle}, time.Hour, dial)
+	}()
+
+	waitFor(t, time.Second, func() bool {
+		return client.subTopic() == LeasingCommandTopic(vehicle.VIN)
+	})
+	waitFor(t, time.Second, func() bool {
+		return client.hasTopicPrefix("leasing/")
+	})
+
+	client.deliver([]byte(`{"id":"cmd-lease","action":"unlock"}`))
+	waitFor(t, time.Second, func() bool {
+		return client.hasAck("cmd-lease")
+	})
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("runFleet() error = %v", err)
+	}
+
+	gotLeaseAck := false
+	for _, topic := range client.snapshotTopics() {
+		if strings.HasPrefix(topic, "fleet/") {
+			t.Fatalf("leasing published on %q", topic)
+		}
+		if !strings.HasPrefix(topic, PrefixLeasing+"/") {
+			t.Fatalf("topic %q, want leasing prefix", topic)
+		}
+		if topic == LeasingAckTopic(vehicle.VIN) {
+			gotLeaseAck = true
+		}
+		if topic == AckTopic(vehicle.VIN) {
+			t.Fatalf("leasing ack used rental topic %q", topic)
+		}
+	}
+	if !gotLeaseAck {
+		t.Fatalf("missing ack on %q, topics = %v", LeasingAckTopic(vehicle.VIN), client.snapshotTopics())
+	}
+}
+
+func TestLeasingTopicHelpers(t *testing.T) {
+	t.Parallel()
+
+	const vin = "FPULSELSG00000001"
+	if got := LeasingTelemetryTopic(vin); got != "leasing/"+vin+"/telemetry" {
+		t.Fatalf("LeasingTelemetryTopic = %q", got)
+	}
+	if got := LeasingCommandTopic(vin); got != "leasing/"+vin+"/commands" {
+		t.Fatalf("LeasingCommandTopic = %q", got)
+	}
+	if got := LeasingAckTopic(vin); got != "leasing/"+vin+"/ack" {
+		t.Fatalf("LeasingAckTopic = %q", got)
+	}
+	if got := TelemetryTopic(vin); got != "fleet/"+vin+"/telemetry" {
+		t.Fatalf("TelemetryTopic reused for leasing: %q", got)
+	}
+}
+
+func nearLibraryRoute(lat, lng float64) bool {
+	lib := routes.Default()
+	for _, r := range lib.Routes {
+		for _, p := range r.Points {
+			if roads.Distance(lat, lng, p.Lat, p.Lng) < 250 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 const storeWest = -46.685
@@ -526,6 +850,23 @@ func (c *recordingClient) subTopic() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.topic
+}
+
+func (c *recordingClient) hasTopicPrefix(prefix string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, topic := range c.topics {
+		if strings.HasPrefix(topic, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *recordingClient) snapshotTopics() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.topics...)
 }
 
 func (c *recordingClient) hasAck(commandID string) bool {

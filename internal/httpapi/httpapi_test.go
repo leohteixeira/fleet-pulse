@@ -77,6 +77,9 @@ func TestHandler_Snapshot(t *testing.T) {
 		if v.VIN == sim.OfflineVIN {
 			hasOffline = true
 		}
+		if strings.HasPrefix(v.VIN, "FPULSELSG") {
+			t.Fatalf("snapshot contains leasing vin %q", v.VIN)
+		}
 	}
 	if !hasOffline {
 		t.Fatalf("snapshot missing offline vin %q", sim.OfflineVIN)
