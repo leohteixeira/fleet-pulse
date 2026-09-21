@@ -11,3 +11,14 @@ coverage.out
 # Frontend
 web/node_modules/
 web/dist/
+
+# Project files
+.project
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+.env.production
