@@ -2,6 +2,7 @@
 package sim
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,8 +78,13 @@ type publisher interface {
 	Publish(ctx context.Context, topic string, payload []byte) error
 }
 
+type commandSubscriber interface {
+	Subscribe(ctx context.Context, topic string, handler func([]byte)) error
+}
+
 type mqttClient interface {
 	publisher
+	commandSubscriber
 	Disconnect(ctx context.Context) error
 }
 
@@ -113,6 +119,16 @@ func NewFleet() []Vehicle {
 // TelemetryTopic is the device publish topic for vin.
 func TelemetryTopic(vin string) string {
 	return "fleet/" + vin + "/telemetry"
+}
+
+// CommandTopic is the device subscribe topic for door commands.
+func CommandTopic(vin string) string {
+	return "fleet/" + vin + "/commands"
+}
+
+// AckTopic is the device publish topic for command acknowledgements.
+func AckTopic(vin string) string {
+	return "fleet/" + vin + "/ack"
 }
 
 // EncodeTelemetry renders the wire payload later stories must keep stable.
@@ -192,14 +208,25 @@ func runVehicle(ctx context.Context, addr string, v Vehicle, interval time.Durat
 			err = fmt.Errorf("disconnect: %w", dErr)
 		}
 	}()
-	err = publishLoop(ctx, v, interval, client)
+
+	cmds := make(chan []byte, 8)
+	if err := client.Subscribe(ctx, CommandTopic(v.VIN), func(payload []byte) {
+		select {
+		case cmds <- payload:
+		case <-ctx.Done():
+		}
+	}); err != nil {
+		return fmt.Errorf("subscribe commands: %w", err)
+	}
+
+	err = publishLoop(ctx, v, interval, client, cmds)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
 }
 
-func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub publisher) error {
+func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub publisher, cmds <-chan []byte) error {
 	payload, err := EncodeTelemetry(v)
 	if err != nil {
 		return err
@@ -220,8 +247,29 @@ func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub pub
 			if err := pub.Publish(ctx, topic, payload); err != nil {
 				return err
 			}
+		case cmd := <-cmds:
+			if err := ackCommand(ctx, v.VIN, cmd, pub); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+func ackCommand(ctx context.Context, vin string, payload []byte, pub publisher) error {
+	var cmd struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &cmd); err != nil || cmd.ID == "" {
+		return nil
+	}
+	raw, err := json.Marshal(struct {
+		CommandID string `json:"commandId"`
+		OK        bool   `json:"ok"`
+	}{CommandID: cmd.ID, OK: true})
+	if err != nil {
+		return fmt.Errorf("encode ack: %w", err)
+	}
+	return pub.Publish(ctx, AckTopic(vin), raw)
 }
 
 func plate(i int) string {
@@ -230,7 +278,8 @@ func plate(i int) string {
 }
 
 type pahoClient struct {
-	c *paho.Client
+	c      *paho.Client
+	router *paho.StandardRouter
 }
 
 func dialPaho(ctx context.Context, addr, clientID string) (mqttClient, error) {
@@ -240,9 +289,11 @@ func dialPaho(ctx context.Context, addr, clientID string) (mqttClient, error) {
 		return nil, fmt.Errorf("dial mqtt: %w", err)
 	}
 
+	router := paho.NewStandardRouter()
 	c := paho.NewClient(paho.ClientConfig{
 		ClientID: clientID,
 		Conn:     conn,
+		Router:   router,
 		OnClientError: func(error) {
 		},
 	})
@@ -259,7 +310,7 @@ func dialPaho(ctx context.Context, addr, clientID string) (mqttClient, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("mqtt connect refused: reason %d", ca.ReasonCode)
 	}
-	return &pahoClient{c: c}, nil
+	return &pahoClient{c: c, router: router}, nil
 }
 
 func (p *pahoClient) Publish(ctx context.Context, topic string, payload []byte) error {
@@ -269,6 +320,20 @@ func (p *pahoClient) Publish(ctx context.Context, topic string, payload []byte) 
 		Payload: payload,
 	}); err != nil {
 		return fmt.Errorf("publish %s: %w", topic, err)
+	}
+	return nil
+}
+
+func (p *pahoClient) Subscribe(ctx context.Context, topic string, handler func([]byte)) error {
+	p.router.RegisterHandler(topic, func(pub *paho.Publish) {
+		handler(bytes.Clone(pub.Payload))
+	})
+	if _, err := p.c.Subscribe(ctx, &paho.Subscribe{
+		Subscriptions: []paho.SubscribeOptions{
+			{Topic: topic, QoS: 0},
+		},
+	}); err != nil {
+		return fmt.Errorf("subscribe %s: %w", topic, err)
 	}
 	return nil
 }

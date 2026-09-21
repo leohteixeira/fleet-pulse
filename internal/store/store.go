@@ -105,6 +105,17 @@ func (m *Memory) Apply(update Vehicle) {
 	m.vehicles[update.VIN] = cur
 }
 
+// Has reports whether vin exists in the roster or last-known map.
+func (m *Memory) Has(vin string) bool {
+	if vin == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.vehicles[vin]
+	return ok
+}
+
 // Snapshot copies current last-known state and the Centro polygon.
 func (m *Memory) Snapshot() Snapshot {
 	m.mu.RLock()

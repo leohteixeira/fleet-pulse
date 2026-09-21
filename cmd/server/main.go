@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/leohteixeira/fleet-pulse/internal/broker"
+	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
@@ -24,7 +25,11 @@ const defaultBindAddr = "0.0.0.0:1883"
 var (
 	_ ingest.Subscriber = (*broker.Broker)(nil)
 	_ ingest.Sink       = telemetrySink{}
+	_ ingest.AckSink    = (*command.Service)(nil)
 	_ httpapi.Store     = (*store.Memory)(nil)
+	_ httpapi.Unlocker  = (*command.Service)(nil)
+	_ command.Publisher = (*broker.Broker)(nil)
+	_ command.Vehicles  = (*store.Memory)(nil)
 )
 
 func main() {
@@ -50,32 +55,38 @@ func run(log *slog.Logger) error {
 	mem.Seed(rosterFromSim(sim.NewFleet()))
 	hub := httpapi.NewHub()
 	sink := telemetrySink{mem: mem, hub: hub}
+	cmds := command.New(b, mem, log)
+	cmds.SetListener(func(rec command.Record) {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return
+		}
+		hub.Publish(httpapi.Event{Name: "command", Data: data})
+	})
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 3)
-	subscribed := make(chan error, 1)
+	errCh := make(chan error, 4)
+	ready := newReadySub(b, 2)
 
 	wg.Go(func() {
-		if err := ingest.Run(
-			ctx,
-			readySub{Subscriber: b, ready: subscribed},
-			sink,
-			log,
-		); err != nil && !errors.Is(err, context.Canceled) {
+		if err := ingest.Run(ctx, ready, sink, cmds, log); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("ingest: %w", err)
 		}
 	})
-	if err := <-subscribed; err != nil {
+	if err := <-ready.done; err != nil {
 		stop()
 		wg.Wait()
-		return errors.Join(fmt.Errorf("subscribe telemetry: %w", err), b.Close())
+		return errors.Join(fmt.Errorf("subscribe ingest: %w", err), b.Close())
 	}
 
-	handler := httpapi.New(mem, hub).Handler()
+	handler := httpapi.New(mem, hub, cmds).Handler()
 	wg.Go(func() {
 		if err := httpapi.Listen(ctx, httpapi.ListenAddr, handler); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("http: %w", err)
 		}
+	})
+	wg.Go(func() {
+		cmds.RunExpiry(ctx)
 	})
 
 	wg.Go(func() {
@@ -108,13 +119,35 @@ func run(log *slog.Logger) error {
 
 type readySub struct {
 	ingest.Subscriber
-	ready chan error
+	done chan error
+	left int
+	mu   sync.Mutex
 }
 
-func (s readySub) Subscribe(ctx context.Context, filter string, handler ingest.MessageHandler) error {
+func newReadySub(sub ingest.Subscriber, n int) *readySub {
+	return &readySub{
+		Subscriber: sub,
+		done:       make(chan error, 1),
+		left:       n,
+	}
+}
+
+func (s *readySub) Subscribe(ctx context.Context, filter string, handler ingest.MessageHandler) error {
 	err := s.Subscriber.Subscribe(ctx, filter, handler)
-	s.ready <- err
-	return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		select {
+		case s.done <- err:
+		default:
+		}
+		return err
+	}
+	s.left--
+	if s.left == 0 {
+		s.done <- nil
+	}
+	return nil
 }
 
 type telemetrySink struct {

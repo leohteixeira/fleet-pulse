@@ -17,8 +17,6 @@ import (
 	"github.com/mochi-mqtt/server/v2/packets"
 )
 
-const ingestSubID = 1
-
 // Broker is an embedded MQTT server that vehicles reach over TCP.
 type Broker struct {
 	bindAddr  string
@@ -27,6 +25,9 @@ type Broker struct {
 	srv       *mqtt.Server
 	closeOnce sync.Once
 	closeErr  error
+	mu        sync.Mutex
+	nextSub   int
+	subs      map[string]int
 }
 
 // New prepares a broker that will bind addr (for example 0.0.0.0:1883).
@@ -34,7 +35,11 @@ func New(addr string, log *slog.Logger) *Broker {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Broker{bindAddr: addr, log: log}
+	return &Broker{
+		bindAddr: addr,
+		log:      log,
+		subs:     make(map[string]int),
+	}
 }
 
 // Addr is the actual listen address after Start.
@@ -101,10 +106,12 @@ func (b *Broker) Subscribe(ctx context.Context, filter string, handler func(topi
 		return errors.New("broker: handler is required")
 	}
 
-	err := b.srv.Subscribe(filter, ingestSubID, func(_ *mqtt.Client, _ packets.Subscription, pk packets.Packet) {
+	id := b.reserveSub(filter)
+	err := b.srv.Subscribe(filter, id, func(_ *mqtt.Client, _ packets.Subscription, pk packets.Packet) {
 		handler(pk.TopicName, pk.Payload)
 	})
 	if err != nil {
+		b.releaseSub(filter)
 		return fmt.Errorf("subscribe %q: %w", filter, err)
 	}
 	return nil
@@ -118,10 +125,53 @@ func (b *Broker) Unsubscribe(ctx context.Context, filter string) error {
 	if b.srv == nil {
 		return errors.New("broker: not started")
 	}
-	if err := b.srv.Unsubscribe(filter, ingestSubID); err != nil {
+	id, ok := b.subID(filter)
+	if !ok {
+		return fmt.Errorf("unsubscribe %q: unknown subscription", filter)
+	}
+	if err := b.srv.Unsubscribe(filter, id); err != nil {
 		return fmt.Errorf("unsubscribe %q: %w", filter, err)
 	}
+	b.releaseSub(filter)
 	return nil
+}
+
+// Publish sends payload on topic through the inline client without exposing mochi types.
+func (b *Broker) Publish(ctx context.Context, topic string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.srv == nil {
+		return errors.New("broker: not started")
+	}
+	if err := b.srv.Publish(topic, payload, false, 0); err != nil {
+		return fmt.Errorf("publish %q: %w", topic, err)
+	}
+	return nil
+}
+
+func (b *Broker) reserveSub(filter string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.subs == nil {
+		b.subs = make(map[string]int)
+	}
+	b.nextSub++
+	b.subs[filter] = b.nextSub
+	return b.nextSub
+}
+
+func (b *Broker) subID(filter string) (int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id, ok := b.subs[filter]
+	return id, ok
+}
+
+func (b *Broker) releaseSub(filter string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.subs, filter)
 }
 
 // Close stops listeners and the embedded broker.
