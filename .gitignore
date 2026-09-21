@@ -7,3 +7,7 @@ bin/
 *.test
 coverage.out
 .gotmp/
+
+# Frontend
+web/node_modules/
+web/dist/

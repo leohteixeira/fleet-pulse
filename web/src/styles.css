@@ -1,0 +1,123 @@
+:root {
+  --bg-0: #0b0e13;
+  --bg-1: #11151c;
+  --bg-2: #181d26;
+  --line: #232a36;
+  --line-soft: #1a2029;
+  --text-1: #e6eaf0;
+  --text-2: #8b95a5;
+  --text-3: #5b6472;
+  --accent: #3b82f6;
+  --accent-hover: #2f6fdd;
+  --ok: #34d399;
+  --warn: #f59e0b;
+  --err: #ef4444;
+  --v-in-use: #c7cfdb;
+  --v-offline: #2a313d;
+  --chip: rgba(11, 14, 19, 0.9);
+  --chip-border: rgba(255, 255, 255, 0.1);
+  --glass: rgba(11, 14, 19, 0.55);
+  --header-h: 44px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.header {
+  height: var(--header-h);
+  flex: 0 0 var(--header-h);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.map,
+.map-slot {
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.map.leaflet-container {
+  background: var(--bg-0);
+  font-family: inherit;
+}
+
+.leaflet-marker-icon,
+.leaflet-marker-pane .marker-icon,
+.marker-icon {
+  background: none;
+  border: none;
+}
+
+.leaflet-marker-icon,
+.leaflet-div-icon,
+.leaflet-marker-pane img,
+.leaflet-marker-pane > * {
+  transition: none;
+}
+
+.error {
+  margin: 24px;
+  color: var(--err);
+  font-size: 13px;
+}
+
+.marker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 44px;
+  height: 44px;
+}
+
+.marker-ring {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.25),
+    0 0 12px rgba(59, 130, 246, 0.5);
+  pointer-events: none;
+}
+
+.marker-chip {
+  font: 600 10px/1 'IBM Plex Mono', ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  padding: 2px 4px;
+  border-radius: 2px;
+  border: 1px solid var(--chip-border);
+}
