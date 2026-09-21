@@ -338,8 +338,23 @@ func (s *Server) leasingWrite(w http.ResponseWriter, r *http.Request, action str
 		return
 	}
 
+	prev, reserved, rej := s.guards.reserveInterval(id)
+	if rej != nil {
+		writeGuardReject(w, rej)
+		return
+	}
+	if rej := s.guards.checkRate(visitorIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), s.trustForwarded)); rej != nil {
+		s.guards.releaseInterval(id, prev, reserved)
+		writeGuardReject(w, rej)
+		return
+	}
+
 	hash := hashVisitor(s.auditSecret, r.RemoteAddr, r.Header.Get("X-Forwarded-For"), s.trustForwarded)
 	status, payload, resourceID, err := fn(r.Context(), id, hash, raw)
+	keepInterval := err == nil && status >= 200 && status < 300
+	if !keepInterval {
+		s.guards.releaseInterval(id, prev, reserved)
+	}
 	if status == http.StatusUnprocessableEntity {
 		if pol, ok := payload.(*policyError); ok {
 			if writeErr := writeJSON(w, http.StatusUnprocessableEntity, pol); writeErr != nil {

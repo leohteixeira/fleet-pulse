@@ -42,6 +42,7 @@ const (
 	floorPct           = 10
 	defaultTickEvery   = 500 * time.Millisecond
 	defaultInstallment = "1290.00"
+	maxBlockAge        = 30 * 24 * time.Hour
 
 	// OriginVisitor is a hashed anonymous visitor write.
 	OriginVisitor = "VISITANTE"
@@ -67,6 +68,12 @@ var (
 type Clock interface {
 	Simulated() time.Time
 	Real() time.Time
+}
+
+// Unblocker releases stale or cleared immobilizer blocks. Declared by this consumer.
+type Unblocker interface {
+	UnlockStale(ctx context.Context, olderThanSim time.Time) error
+	UnlockIfBlocked(ctx context.Context, vin string) error
 }
 
 type persist interface {
@@ -172,6 +179,15 @@ type Book struct {
 	seed      uint64
 	tickEvery time.Duration
 	fleet     []sim.Vehicle
+	unblocker Unblocker
+}
+
+// SetUnblocker wires the immobilizer port used by the ticker self-heal.
+func (b *Book) SetUnblocker(u Unblocker) {
+	if b == nil {
+		return
+	}
+	b.unblocker = u
 }
 
 // New wires persistence and the simulated clock. Seed comes from SIM_SEED.

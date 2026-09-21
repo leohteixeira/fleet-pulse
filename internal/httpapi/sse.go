@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -42,16 +43,24 @@ func NewHub() *Hub {
 	return &Hub{clients: make(map[*client]struct{})}
 }
 
-var _ HubPort = (*Hub)(nil)
+var (
+	_ HubPort = (*Hub)(nil)
+
+	errStreamFull = errors.New("httpapi: stream connection cap reached")
+)
 
 // Subscribe registers a per-client buffer. Empty fleet receives every event.
-// The caller must unsubscribe.
-func (h *Hub) Subscribe(fleet string) (<-chan Event, func()) {
+// The caller must unsubscribe. Process-wide cap is 64 connections.
+func (h *Hub) Subscribe(fleet string) (<-chan Event, func(), error) {
 	c := &client{ch: make(chan Event, clientBufferSize), fleet: fleet}
 	h.mu.Lock()
+	if len(h.clients) >= maxStreamClients {
+		h.mu.Unlock()
+		return nil, nil, errStreamFull
+	}
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()
-	return c.ch, func() { h.unsubscribe(c) }
+	return c.ch, func() { h.unsubscribe(c) }, nil
 }
 
 // Publish enqueues ev for every client, dropping the oldest queued event under pressure.
@@ -128,7 +137,16 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, unsubscribe := s.hub.Subscribe(fleet)
+	events, unsubscribe, err := s.hub.Subscribe(fleet)
+	if err != nil {
+		if writeErr := writeJSON(w, http.StatusTooManyRequests, contractBusyBody{
+			Code:    codeStreamFull,
+			Message: streamFullMessage,
+		}); writeErr != nil {
+			return
+		}
+		return
+	}
 	defer unsubscribe()
 
 	w.Header().Set("Content-Type", "text/event-stream")

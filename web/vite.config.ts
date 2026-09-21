@@ -10,7 +10,15 @@ export default defineConfig({
     port: 3300,
     strictPort: true,
     proxy: {
-      '/api': { target: api, changeOrigin: true },
+      '/api': {
+        target: api,
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.removeHeader('origin');
+          });
+        },
+      },
       '/healthz': { target: api, changeOrigin: true },
     },
   },
@@ -19,7 +27,15 @@ export default defineConfig({
     port: 3300,
     strictPort: true,
     proxy: {
-      '/api': { target: api, changeOrigin: true },
+      '/api': {
+        target: api,
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.removeHeader('origin');
+          });
+        },
+      },
       '/healthz': { target: api, changeOrigin: true },
     },
   },

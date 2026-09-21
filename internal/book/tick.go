@@ -37,7 +37,41 @@ func (b *Book) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	b.unlockCleared(ctx, views, simDay)
+	if err := b.unlockStale(ctx); err != nil {
+		return err
+	}
+	views, err = b.load(ctx)
+	if err != nil {
+		return err
+	}
 	return b.fitRange(ctx, views, simDay)
+}
+
+func (b *Book) unlockCleared(ctx context.Context, views []view, simDay time.Time) {
+	if b.unblocker == nil {
+		return
+	}
+	for _, v := range views {
+		if v.daysLate(simDay) != 0 {
+			continue
+		}
+		if err := b.unblocker.UnlockIfBlocked(ctx, v.vin); err != nil {
+			b.log.Error("unlock cleared block", "err", err)
+		}
+	}
+}
+
+func (b *Book) unlockStale(ctx context.Context) error {
+	if b.unblocker == nil {
+		return nil
+	}
+	cutoff := b.clk.Simulated().Add(-maxBlockAge)
+	if err := b.unblocker.UnlockStale(ctx, cutoff); err != nil {
+		b.log.Error("unlock stale blocks", "err", err)
+		return nil
+	}
+	return nil
 }
 
 func (b *Book) applyDuePayments(ctx context.Context, views []view, simDay time.Time) error {
@@ -153,27 +187,33 @@ func bandCounts(views []view, simDay time.Time) map[string]int {
 }
 
 func (b *Book) healFloor(ctx context.Context, views []view, simDay time.Time) error {
-	need := floorNeed(len(views))
-	counts := bandCounts(views, simDay)
-	for _, band := range []string{BandEmDia, Band115, Band1630, BandAcima30} {
-		for counts[band] < need {
-			added, err := b.addBandContract(ctx, views, band, simDay)
-			if err != nil {
-				return err
+	for {
+		need := floorNeed(len(views))
+		counts := bandCounts(views, simDay)
+		progressed := false
+		for _, band := range []string{BandEmDia, Band115, Band1630, BandAcima30} {
+			for counts[band] < need {
+				added, err := b.addBandContract(ctx, views, band, simDay)
+				if err != nil {
+					return err
+				}
+				if !added {
+					break
+				}
+				progressed = true
+				reloaded, err := b.load(ctx)
+				if err != nil {
+					return err
+				}
+				views = reloaded
+				counts = bandCounts(views, simDay)
+				need = floorNeed(len(views))
 			}
-			if !added {
-				break
-			}
-			reloaded, err := b.load(ctx)
-			if err != nil {
-				return err
-			}
-			views = reloaded
-			counts = bandCounts(views, simDay)
-			need = floorNeed(len(views))
+		}
+		if !progressed {
+			return nil
 		}
 	}
-	return nil
 }
 
 func (b *Book) fitRange(ctx context.Context, views []view, simDay time.Time) error {

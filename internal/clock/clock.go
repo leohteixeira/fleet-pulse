@@ -137,6 +137,19 @@ func (c *Clock) RateLabel() string {
 	return c.rate.Label
 }
 
+// Rate is the calendar advance setting (label and multiplier).
+func (c *Clock) Rate() Rate {
+	if c == nil {
+		return ParseRate("")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rate.Multiplier <= 0 {
+		return ParseRate("")
+	}
+	return c.rate
+}
+
 // Multiplier is the ×N badge (14400 for 4h/s).
 func (c *Clock) Multiplier() int {
 	if c == nil {

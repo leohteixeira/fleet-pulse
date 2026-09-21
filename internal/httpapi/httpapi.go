@@ -38,7 +38,7 @@ type Ready interface {
 
 // HubPort is the publish/subscribe port the stream handler uses.
 type HubPort interface {
-	Subscribe(fleet string) (events <-chan Event, unsubscribe func())
+	Subscribe(fleet string) (events <-chan Event, unsubscribe func(), err error)
 	Publish(Event)
 }
 
@@ -106,6 +106,7 @@ type Server struct {
 	keys           Idempotency
 	auditSecret    string
 	trustForwarded bool
+	guards         *writeGuards
 	files          fs.FS
 }
 
@@ -122,6 +123,7 @@ func New(store Store, hub HubPort, unlocker Unlocker, ready Ready, opts ...Optio
 		files:          webui.FS(),
 		auditSecret:    auditSecretFromEnv(),
 		trustForwarded: trustForwardedFromEnv(),
+		guards:         newWriteGuards(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -150,7 +152,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /{$}", s.spa)
 	mux.HandleFunc("GET /{path...}", s.spa)
-	return mux
+	return withSameOriginCORS(mux)
 }
 
 // Listen binds addr (default 0.0.0.0:8300) and shuts the listener down when ctx is cancelled.

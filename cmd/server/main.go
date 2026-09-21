@@ -47,6 +47,8 @@ var (
 	_ httpapi.LeasingCommands = (*block.Service)(nil)
 	_ httpapi.Blocker         = (*block.Service)(nil)
 	_ httpapi.Roster          = (*store.Postgres)(nil)
+	_ book.Unblocker          = (*block.Service)(nil)
+	_ block.Calendar          = (*clock.Clock)(nil)
 )
 
 var errDatabaseURLRequired = errors.New("database_url is required")
@@ -105,7 +107,8 @@ func run(log *slog.Logger) error {
 		}
 		hub.Publish(httpapi.Event{Name: "command", Data: data, Fleet: httpapi.FleetRental})
 	})
-	blocks := block.New(pg, log)
+	blocks := block.New(pg, log, block.WithCalendar(clk))
+	bk.SetUnblocker(blocks)
 	blocks.SetListener(func(rec block.Record) {
 		data, err := json.Marshal(rec)
 		if err != nil {

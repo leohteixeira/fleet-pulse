@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 )
@@ -149,6 +150,7 @@ type Service struct {
 	blocked  map[string]bool
 	store    Store
 	clock    Clock
+	cal      Calendar
 	live     func() bool
 	log      *slog.Logger
 	newID    func() string
@@ -180,6 +182,20 @@ func WithLive(fn func() bool) Option {
 		if fn != nil {
 			s.live = fn
 		}
+	}
+}
+
+// Calendar converts real ACK times into simulated instants.
+type Calendar interface {
+	Simulated() time.Time
+	Real() time.Time
+	Multiplier() int
+}
+
+// WithCalendar injects the simulated calendar used by UnlockStale.
+func WithCalendar(c Calendar) Option {
+	return func(s *Service) {
+		s.cal = c
 	}
 }
 
@@ -475,6 +491,102 @@ func (s *Service) VehicleState(vin string) string {
 		return VehicleArmado
 	}
 	return VehicleAtivo
+}
+
+// UnlockStale unlocks ACKED blocks whose simulated ack time is before olderThanSim.
+// Persist failures are logged; the next tick retries. Pending if the device is offline.
+func (s *Service) UnlockStale(ctx context.Context, olderThanSim time.Time) error {
+	if s.cal == nil {
+		return nil
+	}
+	acked, err := s.latestAcked(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rec := range acked {
+		if rec.Action != ActionBlock {
+			continue
+		}
+		if !s.Blocked(rec.VIN) {
+			continue
+		}
+		ackSim := s.ackSimulated(rec.UpdatedAt)
+		if !ackSim.Before(olderThanSim) {
+			continue
+		}
+		if _, err := s.Unlock(ctx, rec.VIN); err != nil {
+			if errors.Is(err, ErrNotBlocked) || errors.Is(err, ErrInTransit) {
+				continue
+			}
+			s.log.Error("stale unlock failed", "err", err)
+		}
+	}
+	return nil
+}
+
+// UnlockIfBlocked releases vin when it has an ACKED block. Missing or in-flight is a no-op.
+func (s *Service) UnlockIfBlocked(ctx context.Context, vin string) error {
+	if !s.Blocked(vin) {
+		return nil
+	}
+	if _, err := s.Unlock(ctx, vin); err != nil {
+		if errors.Is(err, ErrNotBlocked) || errors.Is(err, ErrInTransit) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Service) latestAcked(ctx context.Context) ([]Record, error) {
+	byVIN := make(map[string]Record)
+	s.mu.Lock()
+	for _, rec := range s.records {
+		if rec.State != StateAcked {
+			continue
+		}
+		prev, ok := byVIN[rec.VIN]
+		if !ok || rec.UpdatedAt.After(prev.UpdatedAt) {
+			byVIN[rec.VIN] = *rec
+		}
+	}
+	s.mu.Unlock()
+	if s.store != nil {
+		acked, err := s.store.ListLatestAcked(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, rec := range acked {
+			prev, ok := byVIN[rec.VIN]
+			if !ok || rec.UpdatedAt.After(prev.UpdatedAt) {
+				byVIN[rec.VIN] = rec
+			}
+		}
+	}
+	out := make([]Record, 0, len(byVIN))
+	for _, rec := range byVIN {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) ackSimulated(updatedAt time.Time) time.Time {
+	if s.cal == nil || updatedAt.IsZero() {
+		return time.Time{}
+	}
+	elapsed := s.cal.Real().Sub(updatedAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	mult := s.cal.Multiplier()
+	if mult <= 0 {
+		mult = 14400
+	}
+	maxElapsed := time.Duration(math.MaxInt64 / int64(mult))
+	if elapsed > maxElapsed {
+		elapsed = maxElapsed
+	}
+	return s.cal.Simulated().Add(-elapsed * time.Duration(mult))
 }
 
 // ActiveBlock returns the in-flight block command for vin, if any.

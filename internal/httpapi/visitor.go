@@ -34,12 +34,7 @@ func trustForwardedFromEnv() bool {
 }
 
 func hashVisitor(secret, remoteAddr, forwardedFor string, trustForwarded bool) string {
-	ip := stripHostPort(remoteAddr)
-	if trustForwarded {
-		if hop := firstForwardedHop(forwardedFor); hop != "" {
-			ip = hop
-		}
-	}
+	ip := visitorIP(remoteAddr, forwardedFor, trustForwarded)
 	sum := sha256.Sum256([]byte(secret + "\n" + ip))
 	return hex.EncodeToString(sum[:])
 }
