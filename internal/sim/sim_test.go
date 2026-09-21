@@ -422,6 +422,56 @@ func TestPublishLoop_WanderCrossesCentro(t *testing.T) {
 	})
 }
 
+func TestStepVehicle_MovesInUseAndHoldsParked(t *testing.T) {
+	t.Parallel()
+
+	parked := Vehicle{VIN: "FPULSESAO00000003", Lat: CentroLat, Lng: CentroLng, Speed: 0, Ignition: false, Heading: 90}
+	before := parked
+	stepVehicle(&parked)
+	if parked.Lat != before.Lat || parked.Lng != before.Lng {
+		t.Fatalf("parked moved to (%v,%v)", parked.Lat, parked.Lng)
+	}
+
+	moving := Vehicle{VIN: "FPULSESAO00000001", Lat: CentroLat, Lng: CentroLng, Speed: 36, Ignition: true, Heading: 0}
+	advance(&moving, time.Hour)
+	if moving.Lat <= CentroLat {
+		t.Fatalf("northbound lat = %v, want greater than %v", moving.Lat, CentroLat)
+	}
+	if moving.Odometer <= 0 || moving.Trip <= 0 {
+		t.Fatalf("odometer/trip = %v/%v, want distance added", moving.Odometer, moving.Trip)
+	}
+
+	west := Vehicle{VIN: WanderVIN, Lat: CentroLat, Lng: CentroLng}
+	stepVehicle(&west)
+	if west.Lng >= CentroLng || west.Heading != 270 {
+		t.Fatalf("wander = lng %v heading %d, want west", west.Lng, west.Heading)
+	}
+}
+
+func TestNewFleet_ParkedHaveNoSpeed(t *testing.T) {
+	t.Parallel()
+
+	var moving int
+	for i, v := range NewFleet() {
+		if v.IsOffline {
+			continue
+		}
+		if i%3 == 0 {
+			if v.Speed != 0 || v.Ignition {
+				t.Fatalf("%s parked spawn speed=%d ignition=%v", v.VIN, v.Speed, v.Ignition)
+			}
+			continue
+		}
+		if v.Speed <= 0 || !v.Ignition {
+			t.Fatalf("%s in-use spawn speed=%d ignition=%v", v.VIN, v.Speed, v.Ignition)
+		}
+		moving++
+	}
+	if moving < 10 {
+		t.Fatalf("moving vehicles = %d, want a live fleet", moving)
+	}
+}
+
 const storeWest = -46.685
 
 type stubClient struct{}
