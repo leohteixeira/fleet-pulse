@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -30,6 +31,12 @@ const (
 	WanderVIN   = "FPULSESAO00000002"
 	wanderStep  = 0.012
 	wanderFloor = -46.70
+	kmPerDegLat = 111.0
+	visualScale = 1.2
+	boundSouth  = -23.60
+	boundNorth  = -23.51
+	boundWest   = -46.71
+	boundEast   = -46.58
 )
 
 var models = []string{
@@ -110,7 +117,7 @@ func NewFleet() []Vehicle {
 			Lat:       CentroLat + (float64(i%5)-2)*0.004,
 			Lng:       CentroLng + (float64(i/5)-1.5)*0.006,
 			Battery:   22 + (i*4)%76,
-			Speed:     18 + (i*3)%40,
+			Speed:     parkedSpeed(i),
 			Heading:   (i * 18) % 360,
 			Ignition:  i%3 != 0,
 			Locked:    i%3 == 0,
@@ -256,13 +263,65 @@ func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub pub
 	}
 }
 
+func parkedSpeed(i int) int {
+	if i%3 == 0 {
+		return 0
+	}
+	return 18 + (i*3)%40
+}
+
 func stepVehicle(v *Vehicle) {
-	if v.VIN != WanderVIN {
+	if v.IsOffline {
 		return
 	}
-	if v.Lng > wanderFloor {
-		v.Lng -= wanderStep
+	if v.VIN == WanderVIN {
+		if v.Lng > wanderFloor {
+			v.Lng -= wanderStep
+		}
+		v.Heading = 270
+		if v.Speed <= 0 {
+			v.Speed = 22
+		}
+		v.Ignition = true
+		v.Locked = false
+		return
 	}
+	if !v.Ignition || v.Speed <= 0 {
+		return
+	}
+	v.Heading = wrapHeading(v.Heading + rand.IntN(29) - 14)
+	if rand.IntN(100) < 8 {
+		v.Speed = max(8, min(70, v.Speed+rand.IntN(25)-12))
+	}
+	advance(v, PublishInterval)
+	if v.Lat < boundSouth || v.Lat > boundNorth || v.Lng < boundWest || v.Lng > boundEast {
+		v.Heading = headingToward(v.Lat, v.Lng, CentroLat, CentroLng)
+	}
+}
+
+func advance(v *Vehicle, dt time.Duration) {
+	km := float64(v.Speed) * dt.Hours() * visualScale
+	rad := float64(v.Heading) * math.Pi / 180
+	cosLat := math.Cos(v.Lat * math.Pi / 180)
+	if cosLat == 0 {
+		cosLat = 1
+	}
+	v.Lat += km / kmPerDegLat * math.Cos(rad)
+	v.Lng += km / kmPerDegLat * math.Sin(rad) / cosLat
+	v.Odometer += km
+	v.Trip += km
+}
+
+func headingToward(lat, lng, destLat, destLng float64) int {
+	return wrapHeading(int(math.Atan2(destLng-lng, destLat-lat) * 180 / math.Pi))
+}
+
+func wrapHeading(h int) int {
+	h %= 360
+	if h < 0 {
+		h += 360
+	}
+	return h
 }
 
 func publishTelemetry(ctx context.Context, v Vehicle, pub publisher) error {
