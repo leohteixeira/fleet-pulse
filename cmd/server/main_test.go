@@ -10,6 +10,23 @@ import (
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
 
+func TestRequireDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	if _, err := requireDatabaseURL(); err == nil {
+		t.Fatal("empty DATABASE_URL: expected error")
+	}
+
+	const want = "postgres://fleetpulse:fleetpulse@127.0.0.1:5435/fleetpulse?sslmode=disable"
+	t.Setenv("DATABASE_URL", "  "+want+"  ")
+	got, err := requireDatabaseURL()
+	if err != nil {
+		t.Fatalf("DATABASE_URL set: %v", err)
+	}
+	if got != want {
+		t.Fatalf("dsn = %q, want %q", got, want)
+	}
+}
+
 func TestReadySub_SignalsAfterN(t *testing.T) {
 	t.Parallel()
 
@@ -52,11 +69,12 @@ func TestOrderlyShutdown_DrainsSSEFirst(t *testing.T) {
 			order = append(order, "broker")
 			return nil
 		},
+		closePool: func() { order = append(order, "pool") },
 	})
 	if err != nil {
 		t.Fatalf("orderlyShutdown() error = %v", err)
 	}
-	want := []string{"drain", "http", "sim", "wait", "broker"}
+	want := []string{"drain", "http", "sim", "wait", "broker", "pool"}
 	if len(order) != len(want) {
 		t.Fatalf("order = %v, want %v", order, want)
 	}

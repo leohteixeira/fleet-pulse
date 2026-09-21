@@ -18,11 +18,16 @@ import (
 )
 
 type fakeStore struct {
-	snap store.Snapshot
+	snap    store.Snapshot
+	pingErr error
 }
 
 func (f fakeStore) Snapshot() store.Snapshot {
 	return f.snap
+}
+
+func (f fakeStore) Ping(context.Context) error {
+	return f.pingErr
 }
 
 func seededSnapshot() store.Snapshot {
@@ -42,7 +47,7 @@ func seededSnapshot() store.Snapshot {
 func TestHandler_Snapshot(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil, nil).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/api/vehicles", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -81,7 +86,8 @@ func TestHandler_Snapshot(t *testing.T) {
 func TestHandler_Healthz(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil).Handler()
+	ready := fakeStore{}
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil, ready).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -90,10 +96,26 @@ func TestHandler_Healthz(t *testing.T) {
 	}
 }
 
+func TestHandler_HealthzNotReady(t *testing.T) {
+	t.Parallel()
+
+	ready := fakeStore{pingErr: fmt.Errorf("ping failed")}
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), nil, ready).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want non-200", rec.Code)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestHandler_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil, nil).Handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/vehicles", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -106,7 +128,7 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	srv := httptest.NewServer(httpapi.New(fakeStore{snap: seededSnapshot()}, hub, nil).Handler())
+	srv := httptest.NewServer(httpapi.New(fakeStore{snap: seededSnapshot()}, hub, nil, nil).Handler())
 	t.Cleanup(srv.Close)
 
 	ctx := t.Context()
@@ -218,7 +240,7 @@ func TestHandler_Unlock(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), tt.unlocker).Handler()
+			h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), tt.unlocker, nil).Handler()
 			req := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+tt.vin+"/unlock", nil)
 			if tt.key != "" {
 				req.Header.Set("Idempotency-Key", tt.key)
@@ -259,7 +281,7 @@ func TestHandler_UnlockWithMachine(t *testing.T) {
 	pub := &ackPublisher{}
 	svc := command.New(pub, mem, nil)
 	pub.svc = svc
-	h := httpapi.New(mem, httpapi.NewHub(), svc).Handler()
+	h := httpapi.New(mem, httpapi.NewHub(), svc, nil).Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/unlock", nil)
 	req.Header.Set("Idempotency-Key", "machine-1")
@@ -332,7 +354,7 @@ func TestHandler_LockAndQueue(t *testing.T) {
 	mem.Seed([]store.Vehicle{{VIN: "FPULSESAO00000001", DisplayID: "V01"}})
 	pub := &holdPublisher{}
 	svc := command.New(pub, mem, nil)
-	h := httpapi.New(mem, httpapi.NewHub(), svc).Handler()
+	h := httpapi.New(mem, httpapi.NewHub(), svc, nil).Handler()
 
 	lockReq := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/lock", nil)
 	lockReq.Header.Set("Idempotency-Key", "lock-1")
@@ -416,7 +438,7 @@ func TestHandler_GetCommand(t *testing.T) {
 		State:         command.StateAcked,
 		CorrelationID: "corr-1",
 	}}
-	h := httpapi.New(fakeStore{}, httpapi.NewHub(), unlocker).Handler()
+	h := httpapi.New(fakeStore{}, httpapi.NewHub(), unlocker, nil).Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/commands/cmd-1", nil)
 	rec := httptest.NewRecorder()
@@ -443,7 +465,7 @@ func TestHandler_GetCommand(t *testing.T) {
 func TestHandler_SPAFallback(t *testing.T) {
 	t.Parallel()
 
-	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil, nil).Handler()
 
 	home := httptest.NewRequest(http.MethodGet, "/", nil)
 	homeRec := httptest.NewRecorder()
