@@ -90,12 +90,29 @@ paths:
           description: Unknown contract
         '413':
           description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
         '422':
           description: Policy refused
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/contracts/{id}/block:
     post:
       summary: Request a leasing immobilizer command
@@ -122,12 +139,29 @@ paths:
           description: Unknown contract
         '413':
           description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
         '422':
           description: Policy refused
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/contracts/{id}/block/cancel:
     post:
       summary: Cancel an armed block or unlock a blocked VIN
@@ -148,12 +182,29 @@ paths:
           description: Unknown contract
         '413':
           description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
         '422':
           description: Command in transit
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/contracts/{id}/payments:
     post:
       summary: Record a visitor payment
@@ -174,12 +225,29 @@ paths:
           description: Unknown contract
         '413':
           description: Body larger than 8 KiB
+        '409':
+          description: Contract busy; another write landed inside 20s
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
         '422':
           description: No installment overdue or due within 5 simulated days
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyError'
+        '429':
+          description: IP write rate limit; Retry-After is seconds until a slot frees
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/vehicles:
     get:
       summary: Fleet snapshot
@@ -211,6 +279,12 @@ paths:
                 type: string
         '400':
           description: Missing or unknown fleet query
+        '429':
+          description: Process-wide cap of 64 SSE connections reached; existing clients stay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractBusy'
   /api/vehicles/{vin}/unlock:
     post:
       summary: Unlock a vehicle
@@ -477,3 +551,12 @@ components:
             - payment_not_due
             - in_transit
         message: { type: string }
+    ContractBusy:
+      type: object
+      required: [code, message, retryAfter]
+      properties:
+        code:
+          type: string
+          enum: [contract_busy, rate_limited, stream_full]
+        message: { type: string }
+        retryAfter: { type: integer, minimum: 0 }
