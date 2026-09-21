@@ -9,11 +9,17 @@ import (
 	"log/slog"
 )
 
-// TelemetryFilter matches device telemetry topics.
+// TelemetryFilter matches rental device telemetry topics.
 const TelemetryFilter = "fleet/+/telemetry"
 
-// AckFilter matches device command acknowledgements.
+// AckFilter matches rental device command acknowledgements.
 const AckFilter = "fleet/+/ack"
+
+// LeasingTelemetryFilter matches leasing device telemetry topics.
+const LeasingTelemetryFilter = "leasing/+/telemetry"
+
+// LeasingAckFilter matches leasing device acknowledgements.
+const LeasingAckFilter = "leasing/+/ack"
 
 var (
 	errMissingVIN       = errors.New("ingest: missing vin")
@@ -82,6 +88,23 @@ func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog
 		_ = sub.Unsubscribe(context.WithoutCancel(ctx), TelemetryFilter)
 		return fmt.Errorf("subscribe ack: %w", err)
 	}
+	if err := sub.Subscribe(ctx, LeasingTelemetryFilter, func(topic string, payload []byte) {
+		handleLeasing(log, topic, payload)
+	}); err != nil {
+		unsubCtx := context.WithoutCancel(ctx)
+		_ = sub.Unsubscribe(unsubCtx, TelemetryFilter)
+		_ = sub.Unsubscribe(unsubCtx, AckFilter)
+		return fmt.Errorf("subscribe leasing telemetry: %w", err)
+	}
+	if err := sub.Subscribe(ctx, LeasingAckFilter, func(topic string, payload []byte) {
+		handleLeasingAck(log, topic, payload)
+	}); err != nil {
+		unsubCtx := context.WithoutCancel(ctx)
+		_ = sub.Unsubscribe(unsubCtx, TelemetryFilter)
+		_ = sub.Unsubscribe(unsubCtx, AckFilter)
+		_ = sub.Unsubscribe(unsubCtx, LeasingTelemetryFilter)
+		return fmt.Errorf("subscribe leasing ack: %w", err)
+	}
 
 	<-ctx.Done()
 
@@ -92,6 +115,12 @@ func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog
 	}
 	if err := sub.Unsubscribe(unsubCtx, AckFilter); err != nil {
 		unsubErr = errors.Join(unsubErr, fmt.Errorf("unsubscribe ack: %w", err))
+	}
+	if err := sub.Unsubscribe(unsubCtx, LeasingTelemetryFilter); err != nil {
+		unsubErr = errors.Join(unsubErr, fmt.Errorf("unsubscribe leasing telemetry: %w", err))
+	}
+	if err := sub.Unsubscribe(unsubCtx, LeasingAckFilter); err != nil {
+		unsubErr = errors.Join(unsubErr, fmt.Errorf("unsubscribe leasing ack: %w", err))
 	}
 	return unsubErr
 }
@@ -113,6 +142,24 @@ func handleAck(log *slog.Logger, acks AckSink, topic string, payload []byte) {
 		return
 	}
 	acks.Apply(a.CommandID, a.OK)
+}
+
+func handleLeasing(log *slog.Logger, topic string, payload []byte) {
+	p, err := parse(payload)
+	if err != nil {
+		log.Warn("skipping leasing telemetry", "topic", topic, "err", err)
+		return
+	}
+	log.Info("leasing telemetry", "vin", p.VIN, "lat", p.Lat, "lng", p.Lng)
+}
+
+func handleLeasingAck(log *slog.Logger, topic string, payload []byte) {
+	a, err := parseAck(payload)
+	if err != nil {
+		log.Warn("skipping leasing ack", "topic", topic, "err", err)
+		return
+	}
+	log.Info("leasing ack", "commandId", a.CommandID, "ok", a.OK)
 }
 
 type ackPayload struct {

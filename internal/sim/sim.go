@@ -10,12 +10,16 @@ import (
 	"math"
 	"math/rand/v2"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/eclipse/paho.golang/paho"
 
 	"github.com/leohteixeira/fleet-pulse/internal/roads"
+	"github.com/leohteixeira/fleet-pulse/internal/routes"
 )
 
 const (
@@ -30,11 +34,22 @@ const (
 	// OfflineVIN never connects and never publishes.
 	OfflineVIN = "FPULSESAO00000020"
 	// WanderVIN walks west across Centro's western edge over telemetry ticks.
-	WanderVIN   = "FPULSESAO00000002"
-	wanderStep  = 0.012
-	wanderFloor = -46.70
-	kmPerDegLat = 111.0
-	visualScale = 1.2
+	WanderVIN      = "FPULSESAO00000002"
+	wanderStep     = 0.012
+	wanderFloor    = -46.70
+	kmPerDegLat    = 111.0
+	visualScale    = 1.2
+	envSimSeed     = "SIM_SEED"
+	defaultSimSeed = uint64(20260921)
+)
+
+type incidentKind int
+
+const (
+	incidentNone incidentKind = iota
+	incidentOffline
+	incidentLowBattery
+	incidentSignalLoss
 )
 
 var models = []string{
@@ -52,25 +67,39 @@ var models = []string{
 
 // Vehicle is one simulated fleet member and the telemetry it will publish.
 type Vehicle struct {
-	VIN       string
-	DisplayID string
-	Plate     string
-	Model     string
-	Lat       float64
-	Lng       float64
-	Battery   int
-	Speed     int
-	Heading   int
-	Ignition  bool
-	Locked    bool
-	Odometer  float64
-	Trip      float64
-	IsOffline bool
-	refuse    func() bool
-	edge      int
-	along     float64
-	onGraph   bool
-	westPick  func(from int, outgoing []int) int
+	VIN              string
+	DisplayID        string
+	Plate            string
+	Model            string
+	Lat              float64
+	Lng              float64
+	Battery          int
+	Speed            int
+	Heading          int
+	Ignition         bool
+	Locked           bool
+	Odometer         float64
+	Trip             float64
+	IsOffline        bool
+	Prefix           string
+	RouteID          string
+	refuse           func() bool
+	edge             int
+	along            float64
+	onGraph          bool
+	westPick         func(from int, outgoing []int) int
+	routeIdx         int
+	routeAlong       float64
+	rng              *rand.Rand
+	ticks            int
+	incident         incidentState
+	nextIncidentAt   int
+	nextIncidentKind incidentKind
+}
+
+type incidentState struct {
+	kind      incidentKind
+	remaining int
 }
 
 type telemetry struct {
@@ -108,30 +137,54 @@ type dialFunc func(ctx context.Context, addr, clientID string) (mqttClient, erro
 // NewFleet returns 20 vehicles around Centro, including exactly one offline VIN.
 func NewFleet() []Vehicle {
 	g := roads.Default()
+	ids := routes.Default().RouteIDs()
+	src := newRNG(1)
 	fleet := make([]Vehicle, 0, FleetSize)
 	for i := range FleetSize {
 		n := i + 1
 		vin := fmt.Sprintf("FPULSESAO%08d", n)
 		v := Vehicle{
-			VIN:       vin,
-			DisplayID: fmt.Sprintf("V%02d", n),
-			Plate:     plate(i),
-			Model:     models[i%len(models)],
-			Lat:       CentroLat + (float64(i%5)-2)*0.004,
-			Lng:       CentroLng + (float64(i/5)-1.5)*0.006,
-			Battery:   22 + (i*4)%76,
-			Speed:     parkedSpeed(i),
-			Heading:   (i * 18) % 360,
-			Ignition:  i%3 != 0,
-			Locked:    i%3 == 0,
-			Odometer:  4200 + float64(i)*1000,
-			Trip:      float64((i%7)+1) * 0.4,
-			IsOffline: vin == OfflineVIN,
+			VIN:              vin,
+			DisplayID:        fmt.Sprintf("V%02d", n),
+			Plate:            plate(i),
+			Model:            models[i%len(models)],
+			Lat:              CentroLat + (float64(i%5)-2)*0.004,
+			Lng:              CentroLng + (float64(i/5)-1.5)*0.006,
+			Battery:          22 + (i*4)%76,
+			Speed:            parkedSpeed(i),
+			Heading:          (i * 18) % 360,
+			Ignition:         i%3 != 0,
+			Locked:           i%3 == 0,
+			Odometer:         4200 + float64(i)*1000,
+			Trip:             float64((i%7)+1) * 0.4,
+			IsOffline:        vin == OfflineVIN,
+			Prefix:           PrefixFleet,
+			RouteID:          ids[src.IntN(len(ids))],
+			routeIdx:         -1,
+			rng:              newRNG(uint64(n)),
+			nextIncidentAt:   40 + src.IntN(40),
+			nextIncidentKind: incidentKind(1 + src.IntN(3)),
 		}
 		applyCursor(&v, g.Snap(v.Lat, v.Lng))
 		fleet = append(fleet, v)
 	}
 	return fleet
+}
+
+func processSeed() uint64 {
+	raw := strings.TrimSpace(os.Getenv(envSimSeed))
+	if raw == "" {
+		return defaultSimSeed
+	}
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return defaultSimSeed
+	}
+	return n
+}
+
+func newRNG(stream uint64) *rand.Rand {
+	return rand.New(rand.NewPCG(processSeed(), stream))
 }
 
 // TelemetryTopic is the device publish topic for vin.
@@ -172,9 +225,15 @@ func EncodeTelemetry(v Vehicle) ([]byte, error) {
 	return raw, nil
 }
 
-// Run connects each online vehicle as a real MQTT client and publishes every 2s.
+// Run connects each online rental and leasing vehicle as a real MQTT client
+// and publishes every 2s. Leasing clients use leasing/{vin}/ topics.
 func Run(ctx context.Context, addr string) error {
-	return runFleet(ctx, addr, NewFleet(), PublishInterval, dialPaho)
+	rental := NewFleet()
+	leasing := NewLeasingFleet()
+	fleet := make([]Vehicle, 0, len(rental)+len(leasing))
+	fleet = append(fleet, rental...)
+	fleet = append(fleet, leasing...)
+	return runFleet(ctx, addr, fleet, PublishInterval, dialPaho)
 }
 
 func runFleet(ctx context.Context, addr string, fleet []Vehicle, interval time.Duration, dial dialFunc) error {
@@ -228,7 +287,7 @@ func runVehicle(ctx context.Context, addr string, v Vehicle, interval time.Durat
 	}()
 
 	cmds := make(chan []byte, 8)
-	if err := client.Subscribe(ctx, CommandTopic(v.VIN), func(payload []byte) {
+	if err := client.Subscribe(ctx, v.commandTopic(), func(payload []byte) {
 		select {
 		case cmds <- payload:
 		case <-ctx.Done():
@@ -245,8 +304,10 @@ func runVehicle(ctx context.Context, addr string, v Vehicle, interval time.Durat
 }
 
 func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub publisher, cmds <-chan []byte) error {
-	if err := publishTelemetry(ctx, v, pub); err != nil {
-		return err
+	if !skipPublish(&v) {
+		if err := publishTelemetry(ctx, v, pub); err != nil {
+			return err
+		}
 	}
 
 	ticker := time.NewTicker(interval)
@@ -257,6 +318,9 @@ func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub pub
 			return ctx.Err()
 		case <-ticker.C:
 			stepVehicle(&v)
+			if skipPublish(&v) {
+				continue
+			}
 			if err := publishTelemetry(ctx, v, pub); err != nil {
 				return err
 			}
@@ -266,6 +330,47 @@ func publishLoop(ctx context.Context, v Vehicle, interval time.Duration, pub pub
 			}
 		}
 	}
+}
+
+func skipPublish(v *Vehicle) bool {
+	if v.rng == nil {
+		return false
+	}
+	v.ticks++
+	if v.incident.remaining > 0 {
+		v.incident.remaining--
+		skip := false
+		switch v.incident.kind {
+		case incidentOffline:
+			skip = true
+		case incidentSignalLoss:
+			skip = v.rng.IntN(2) == 0
+		case incidentLowBattery:
+			if v.Battery > 15 {
+				v.Battery = 8 + v.rng.IntN(8)
+			}
+		}
+		if v.incident.remaining == 0 {
+			v.incident.kind = incidentNone
+			v.nextIncidentAt = v.ticks + 2 + v.rng.IntN(8)
+			v.nextIncidentKind = incidentKind(1 + v.rng.IntN(3))
+		}
+		return skip
+	}
+	if v.nextIncidentAt > 0 && v.ticks >= v.nextIncidentAt {
+		v.incident.kind = v.nextIncidentKind
+		v.incident.remaining = 3 + v.rng.IntN(4)
+		v.nextIncidentAt = 0
+		switch v.incident.kind {
+		case incidentLowBattery:
+			if v.Battery > 15 {
+				v.Battery = 8 + v.rng.IntN(8)
+			}
+		case incidentOffline, incidentSignalLoss:
+			return true
+		}
+	}
+	return false
 }
 
 func parkedSpeed(i int) int {
@@ -302,15 +407,135 @@ func stepVehicle(v *Vehicle) {
 	if !v.Ignition || v.Speed <= 0 {
 		return
 	}
-	if rand.IntN(100) < 8 {
-		v.Speed = max(8, min(70, v.Speed+rand.IntN(25)-12))
+	roll := rand.IntN
+	if v.rng != nil {
+		roll = v.rng.IntN
 	}
-	g := ensureOnGraph(v)
+	if roll(100) < 8 {
+		v.Speed = max(8, min(70, v.Speed+roll(25)-12))
+	}
+	stepAlongRoute(v, routes.Default())
+}
+
+func stepAlongRoute(v *Vehicle, lib *routes.Library) {
+	r, ok := lib.Lookup(v.RouteID)
+	if !ok || len(r.Points) < 2 {
+		ids := lib.RouteIDs()
+		if len(ids) == 0 {
+			return
+		}
+		pick := 0
+		if v.rng != nil {
+			pick = v.rng.IntN(len(ids))
+		}
+		v.RouteID = ids[pick]
+		r, ok = lib.Lookup(v.RouteID)
+		if !ok || len(r.Points) < 2 {
+			return
+		}
+		v.routeIdx = -1
+	}
 	km := float64(v.Speed) * PublishInterval.Hours() * visualScale
-	arrived := v.edge
-	applyCursor(v, g.Advance(cursorOf(v), km*1000, pickRoam(g, arrived)))
+	if km <= 0 {
+		return
+	}
+	meters := km * 1000
+	if v.routeIdx < 0 || v.routeIdx >= len(r.Points)-1 {
+		v.routeIdx, v.routeAlong = nearestOnRoute(r.Points, v.Lat, v.Lng)
+	}
+	for meters > 1e-6 && v.routeIdx < len(r.Points)-1 {
+		a, b := r.Points[v.routeIdx], r.Points[v.routeIdx+1]
+		seg := roads.Distance(a.Lat, a.Lng, b.Lat, b.Lng)
+		if seg <= 1e-6 {
+			v.routeIdx++
+			v.routeAlong = 0
+			continue
+		}
+		remain := seg - v.routeAlong
+		if remain <= 1e-6 {
+			v.routeIdx++
+			v.routeAlong = 0
+			continue
+		}
+		if meters <= remain {
+			t := (v.routeAlong + meters) / seg
+			v.Lat = a.Lat + t*(b.Lat-a.Lat)
+			v.Lng = a.Lng + t*(b.Lng-a.Lng)
+			v.Heading = displacementHeading(a.Lat, a.Lng, b.Lat, b.Lng)
+			v.routeAlong += meters
+			meters = 0
+			break
+		}
+		meters -= remain
+		v.routeIdx++
+		v.routeAlong = 0
+		v.Lat, v.Lng = b.Lat, b.Lng
+		v.Heading = displacementHeading(a.Lat, a.Lng, b.Lat, b.Lng)
+	}
+	if v.routeIdx >= len(r.Points)-1 {
+		ids := lib.RouteIDs()
+		if len(ids) > 0 {
+			if v.rng != nil {
+				v.RouteID = ids[v.rng.IntN(len(ids))]
+			} else {
+				v.RouteID = ids[0]
+			}
+			if next, ok := lib.Lookup(v.RouteID); ok && len(next.Points) >= 2 {
+				v.routeIdx, v.routeAlong = nearestOnRoute(next.Points, v.Lat, v.Lng)
+			} else {
+				v.routeIdx = -1
+				v.routeAlong = 0
+			}
+		} else {
+			v.routeIdx = 0
+			v.routeAlong = 0
+		}
+	}
 	v.Odometer += km
 	v.Trip += km
+}
+
+func nearestOnRoute(pts []routes.Point, lat, lng float64) (idx int, along float64) {
+	bestDist := math.MaxFloat64
+	for i := 0; i < len(pts)-1; i++ {
+		alongSeg, dist := projectRoute(pts[i], pts[i+1], lat, lng)
+		if dist < bestDist {
+			bestDist = dist
+			idx = i
+			along = alongSeg
+		}
+	}
+	return idx, along
+}
+
+func projectRoute(a, b routes.Point, lat, lng float64) (along, dist float64) {
+	seg := roads.Distance(a.Lat, a.Lng, b.Lat, b.Lng)
+	if seg <= 1e-6 {
+		return 0, roads.Distance(lat, lng, a.Lat, a.Lng)
+	}
+	midLat := (a.Lat + b.Lat) / 2
+	cosLat := math.Cos(midLat * math.Pi / 180)
+	if cosLat == 0 {
+		cosLat = 1
+	}
+	bx := (b.Lng - a.Lng) * kmPerDegLat * cosLat * 1000
+	by := (b.Lat - a.Lat) * kmPerDegLat * 1000
+	px := (lng - a.Lng) * kmPerDegLat * cosLat * 1000
+	py := (lat - a.Lat) * kmPerDegLat * 1000
+	ab2 := bx*bx + by*by
+	t := 0.0
+	if ab2 > 0 {
+		t = (px*bx + py*by) / ab2
+	}
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	qx := t * bx
+	qy := t * by
+	return t * seg, math.Hypot(px-qx, py-qy)
 }
 
 func applyCursor(v *Vehicle, c roads.Cursor) {
@@ -357,36 +582,12 @@ func wanderMeters(lat float64) float64 {
 	return wanderStep * kmPerDegLat * cosLat * 1000
 }
 
-func pickRoam(g *roads.Graph, arrived int) func(from int, outgoing []int) int {
-	cameFrom := -1
-	if arrived >= 0 && arrived < len(g.Edges) {
-		cameFrom = g.Edges[arrived].From
-	}
-	return func(from int, outgoing []int) int {
-		choices := outgoing
-		if cameFrom >= 0 && len(outgoing) > 1 {
-			filtered := make([]int, 0, len(outgoing))
-			for _, ei := range outgoing {
-				if g.Edges[ei].To != cameFrom {
-					filtered = append(filtered, ei)
-				}
-			}
-			if len(filtered) > 0 {
-				choices = filtered
-			}
-		}
-		chosen := choices[rand.IntN(len(choices))]
-		cameFrom = from
-		return chosen
-	}
-}
-
 func publishTelemetry(ctx context.Context, v Vehicle, pub publisher) error {
 	payload, err := EncodeTelemetry(v)
 	if err != nil {
 		return err
 	}
-	return pub.Publish(ctx, TelemetryTopic(v.VIN), payload)
+	return pub.Publish(ctx, v.telemetryTopic(), payload)
 }
 
 func (v Vehicle) rollRefuse() bool {
@@ -412,7 +613,10 @@ func ackCommand(ctx context.Context, v *Vehicle, payload []byte, pub publisher) 
 		case "unlock":
 			v.Locked = false
 		}
-		_ = publishTelemetry(ctx, *v, pub)
+		offline := v.incident.kind == incidentOffline || v.incident.kind == incidentSignalLoss
+		if !offline {
+			_ = publishTelemetry(ctx, *v, pub)
+		}
 	}
 	raw, err := json.Marshal(struct {
 		CommandID string `json:"commandId"`
@@ -421,7 +625,7 @@ func ackCommand(ctx context.Context, v *Vehicle, payload []byte, pub publisher) 
 	if err != nil {
 		return fmt.Errorf("encode ack: %w", err)
 	}
-	return pub.Publish(ctx, AckTopic(v.VIN), raw)
+	return pub.Publish(ctx, v.ackTopic(), raw)
 }
 
 func plate(i int) string {

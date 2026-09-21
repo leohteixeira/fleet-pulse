@@ -87,7 +87,7 @@ func run(log *slog.Logger) error {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
-	ready := newReadySub(b, 2)
+	ready := newReadySub(b, 4)
 
 	wg.Go(func() {
 		if err := ingest.Run(ctx, ready, sink, cmds, log); err != nil && !errors.Is(err, context.Canceled) {
