@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   OFFLINE_MS,
+  TIMEOUT_COPY,
+  commandButtons,
+  commandLine,
   deriveState,
+  headerKpis,
   headingBucket,
   iconIdentity,
   initialState,
   planMarkerUpdate,
   reducer,
+  vehicleCommands,
   type Polygon,
   type Snapshot,
   type Vehicle,
@@ -164,5 +169,175 @@ describe('reducer', () => {
       payload: JSON.stringify({ lat: -23.5 }),
     });
     expect(missingVin).toBe(good);
+  });
+
+  it('keeps in-flight and queued commands per VIN and ignores a bad command payload', () => {
+    const hydrated = reducer(initialState, { type: 'hydrate', snapshot: snapshot(2) });
+    const sent = reducer(hydrated, {
+      type: 'command',
+      now,
+      payload: {
+        id: 'cmd-1',
+        vin: 'FPULSESAO00000001',
+        action: 'lock',
+        state: 'SENT',
+      },
+    });
+    const queued = reducer(sent, {
+      type: 'command',
+      now: now + 1,
+      payload: {
+        id: 'cmd-2',
+        vin: 'FPULSESAO00000001',
+        action: 'unlock',
+        state: 'PENDING',
+      },
+    });
+    const slot = vehicleCommands(queued.commands['FPULSESAO00000001']);
+    expect(slot.inFlight?.id).toBe('cmd-1');
+    expect(slot.queued?.id).toBe('cmd-2');
+    expect(commandButtons(queued.commands['FPULSESAO00000001'])).toEqual({
+      unlockDisabled: true,
+      lockDisabled: true,
+      unlockLabel: 'Destravar',
+      lockLabel: 'Aguardando…',
+    });
+
+    const unchanged = reducer(queued, { type: 'command', now: now + 2, payload: '{not-json' });
+    expect(unchanged).toBe(queued);
+  });
+
+  it('promotes the queued command after the in-flight command terminals', () => {
+    let state = reducer(initialState, { type: 'hydrate', snapshot: snapshot(1) });
+    state = reducer(state, {
+      type: 'command',
+      now,
+      payload: { id: 'a', vin: 'FPULSESAO00000001', action: 'lock', state: 'SENT' },
+    });
+    state = reducer(state, {
+      type: 'command',
+      now: now + 1,
+      payload: { id: 'b', vin: 'FPULSESAO00000001', action: 'unlock', state: 'PENDING' },
+    });
+    state = reducer(state, {
+      type: 'command',
+      now: now + 2,
+      payload: { id: 'a', vin: 'FPULSESAO00000001', action: 'lock', state: 'ACKED' },
+    });
+    const slot = vehicleCommands(state.commands['FPULSESAO00000001']);
+    expect(slot.inFlight?.id).toBe('b');
+    expect(slot.inFlight?.state).toBe('PENDING');
+    expect(slot.queued).toBeNull();
+    expect(commandLine(slot.inFlight).label).toBe('PENDENTE');
+    expect(commandButtons(state.commands['FPULSESAO00000001'])).toEqual({
+      unlockDisabled: true,
+      lockDisabled: false,
+      unlockLabel: 'Enviando…',
+      lockLabel: 'Travar',
+    });
+  });
+
+  it('does not regress SENT to a late PENDING for the same id', () => {
+    let state = reducer(initialState, { type: 'hydrate', snapshot: snapshot(1) });
+    state = reducer(state, {
+      type: 'command',
+      now,
+      payload: { id: 'late', vin: 'FPULSESAO00000001', action: 'unlock', state: 'SENT' },
+    });
+    const replay = reducer(state, {
+      type: 'command',
+      now: now + 1,
+      payload: { id: 'late', vin: 'FPULSESAO00000001', action: 'unlock', state: 'PENDING' },
+    });
+    expect(replay.commands['FPULSESAO00000001']?.[0]?.state).toBe('SENT');
+    expect(replay).toBe(state);
+  });
+
+  it('prefers SENT as in-flight when a PENDING successor is listed first', () => {
+    const slot = vehicleCommands([
+      { id: 'q', vin: 'v', action: 'unlock', state: 'PENDING' },
+      { id: 's', vin: 'v', action: 'lock', state: 'SENT' },
+    ]);
+    expect(slot.inFlight?.id).toBe('s');
+    expect(slot.queued?.id).toBe('q');
+  });
+
+  it('records a refused command as falhou', () => {
+    let state = reducer(initialState, { type: 'hydrate', snapshot: snapshot(1) });
+    state = reducer(state, {
+      type: 'command',
+      now,
+      payload: { id: 'fail', vin: 'FPULSESAO00000001', action: 'lock', state: 'FAILED' },
+    });
+    expect(state.feed[0]?.kind).toBe('falhou');
+    expect(state.feed[0]?.description).toBe('Veículo recusou o comando');
+    expect(commandLine(vehicleCommands(state.commands['FPULSESAO00000001']).inFlight).label).toBe('FALHOU');
+  });
+
+  it('records area-exit and timeout copy with 5 segundos', () => {
+    let state = reducer(initialState, { type: 'hydrate', snapshot: snapshot(1) });
+    state = reducer(state, {
+      type: 'area-exit',
+      now,
+      payload: { vin: 'FPULSESAO00000001', displayId: 'V01', lat: -23.55, lng: -46.686 },
+    });
+    expect(state.feed[0]?.kind).toBe('fora');
+    expect(deriveState({ ...state.vehicles['FPULSESAO00000001']!, lng: -46.686, lastSeen: now }, state.polygon, now)).toBe(
+      'fora',
+    );
+
+    state = reducer(state, {
+      type: 'command',
+      now: now + 1,
+      payload: { id: 'off', vin: 'FPULSESAO00000001', action: 'unlock', state: 'TIMEOUT' },
+    });
+    expect(state.feed[0]?.description).toBe(TIMEOUT_COPY);
+    expect(TIMEOUT_COPY).toContain('5 segundos');
+    expect(commandLine(vehicleCommands(state.commands['FPULSESAO00000001']).inFlight).label).toBe('EXPIROU');
+  });
+
+  it('disables the same in-flight action and keeps the other queueable', () => {
+    expect(
+      commandButtons([{ id: '1', vin: 'v', action: 'unlock', state: 'SENT' }]),
+    ).toEqual({
+      unlockDisabled: true,
+      lockDisabled: false,
+      unlockLabel: 'Aguardando…',
+      lockLabel: 'Travar',
+    });
+    expect(
+      commandButtons([{ id: '2', vin: 'v', action: 'lock', state: 'PENDING' }]),
+    ).toEqual({
+      unlockDisabled: false,
+      lockDisabled: true,
+      unlockLabel: 'Destravar',
+      lockLabel: 'Enviando…',
+    });
+  });
+
+  it('counts header KPIs including Fora and Pendentes', () => {
+    const hydrated = reducer(initialState, { type: 'hydrate', snapshot: snapshot(3) });
+    const patched = reducer(hydrated, {
+      type: 'patch',
+      now,
+      payload: {
+        vin: 'FPULSESAO00000001',
+        lat: -23.55,
+        lng: -46.686,
+        speed: 20,
+        ignition: true,
+        locked: false,
+      },
+    });
+    const withCmd = reducer(patched, {
+      type: 'command',
+      now,
+      payload: { id: 'p', vin: 'FPULSESAO00000001', action: 'lock', state: 'SENT' },
+    });
+    const kpis = headerKpis(Object.values(withCmd.vehicles), withCmd.polygon, now, withCmd.commands);
+    expect(kpis.vehicles).toBe(3);
+    expect(kpis.fora).toBe(1);
+    expect(kpis.offline).toBe(2);
+    expect(kpis.pendentes).toBe(1);
   });
 });

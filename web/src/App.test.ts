@@ -4,6 +4,7 @@ import {
   SNAPSHOT_ERROR,
   connectTelemetry,
   loadSnapshot,
+  sendCommand,
   type StreamSource,
 } from './App';
 import { initialState, reducer, type Action, type FleetState, type Snapshot } from './state';
@@ -120,7 +121,78 @@ describe('connectTelemetry', () => {
     expect(state.vehicles['FPULSESAO00000001']?.lng).toBe(-46.62);
     expect(state.vehicles['FPULSESAO00000001']?.lastSeen).not.toBeNull();
 
+    created?.emit(
+      'command',
+      JSON.stringify({
+        id: 'cmd-1',
+        vin: 'FPULSESAO00000001',
+        action: 'unlock',
+        state: 'SENT',
+      }),
+    );
+    expect(state.commands['FPULSESAO00000001']?.[0]?.state).toBe('SENT');
+
+    created?.emit(
+      'area-exit',
+      JSON.stringify({ vin: 'FPULSESAO00000001', displayId: 'V01', lat: -23.55, lng: -46.686 }),
+    );
+    expect(state.feed[0]?.kind).toBe('fora');
+
     cleanup();
     expect(created?.closed).toBe(true);
+  });
+});
+
+describe('sendCommand', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs unlock and lock with Idempotency-Key, dispatches 202, and skips 409', async () => {
+    vi.stubGlobal('crypto', { randomUUID: () => 'key-test' });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const id = url.endsWith('/lock') ? 'cmd-lock' : 'cmd-unlock';
+      return new Response(JSON.stringify({ id, state: 'SENT' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const dispatched: Action[] = [];
+    const dispatch = (action: Action) => {
+      dispatched.push(action);
+    };
+
+    await sendCommand('FPULSESAO00000001', 'unlock', dispatch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/vehicles/FPULSESAO00000001/unlock', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'key-test' },
+    });
+    expect(dispatched).toEqual([
+      {
+        type: 'command',
+        payload: { id: 'cmd-unlock', vin: 'FPULSESAO00000001', action: 'unlock', state: 'SENT' },
+      },
+    ]);
+
+    await sendCommand('FPULSESAO00000001', 'lock', dispatch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/vehicles/FPULSESAO00000001/lock', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'key-test' },
+    });
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched[1]).toEqual({
+      type: 'command',
+      payload: { id: 'cmd-lock', vin: 'FPULSESAO00000001', action: 'lock', state: 'SENT' },
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'busy', state: 'SENT' }), { status: 409 })),
+    );
+    await sendCommand('FPULSESAO00000001', 'unlock', dispatch);
+    expect(dispatched).toHaveLength(2);
   });
 });
