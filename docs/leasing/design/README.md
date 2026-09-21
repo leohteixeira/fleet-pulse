@@ -86,23 +86,52 @@ drops to opacity .45 and states the reason in 10.5px underneath.
 
 ## Relation to the backend contract
 
-The current MVP contract in `CLAUDE.md` covers `unlock`/`lock` with states `PENDING`, `SENT`,
-`ACKED`, `FAILED`, `TIMEOUT` and a 5-second expiry. The leasing screen is a superset and is **not
-yet reflected** in `openapi.yaml`:
+Closed against `_bmad-output/specs/spec-leasing/`. Rental unlock/lock stays on
+`PENDING` / `SENT` / `ACKED` / `FAILED` / `TIMEOUT` with a 5-second expiry from `SENT`.
+Leasing is a distinct machine:
 
-- A block command waits for a vehicle condition (stopped, ignition off) before it is sent. That is
-  the `armado` state, which has no equivalent in the fleet command machine and is not bounded by
-  the 5-second expiry — expiry here is the device being offline for more than 30s while armed.
-- Contracts, instalments, overdue amounts, bands, notifications and the audit trail are domain data
-  the current API does not expose.
-- Policy, minimum interval and rate limiting are refusals the mock evaluates client-side; they are
-  business rules and belong in the backend.
+| Backend | Mock `COMANDO` |
+|---|---|
+| `REQUESTED` | `SOLICITADO` |
+| `ARMED` | `ARMADO · aguardando veículo parar` |
+| `SENT` | `ENVIADO · aguardando ACK` |
+| `ACKED` | `CONFIRMADO` |
+| `CANCELLED` | `CANCELADO` |
+| `FAILED` | `FALHOU` |
+| `TIMEOUT` | `EXPIRADO` |
 
-Nothing in this directory has been implemented yet. Before writing code, the command machine,
-contract resource and refusal rules need to be settled and recorded in `specs/` and `openapi.yaml`.
+`ARMED` waits for a stopped, ignition-off, online vehicle and is not bounded by the rental
+5-second window. `TIMEOUT` is armed + offline for more than 30s.
+
+Policy, interval, and rate limit are backend rules. The mock's client-side guards do not ship.
+
+## Recorded implementation decisions
+
+The mock remains visual truth. These decisions override mock-only behaviour and the original
+brief where they conflicted.
+
+1. **Policy.** 16+ simulated days late, a prior notification at least 48h old, device online.
+   Notify cooldown 24h simulated. Payment allowed if an installment is overdue or due within
+   5 simulated days. Reason 8–280 characters. JSON body max 8 KiB.
+2. **Guards.** 20s minimum interval per contract (`409`). 6 writes / 60s / IP (`429` +
+   `Retry-After`). Self-heal: 10% floor per overdue band; unblock after 30 simulated days.
+3. **Calendar.** Environment-only rate (`1h/s`, `4h/s` default / `×14400`, `12h/s`). The chip
+   is display, not a control. Telemetry clock stays real time. Brief `SIM_DAY_SECONDS=300`
+   is superseded.
+4. **Map share.** `--map-share 42%` as in the spec HTML. The mock's 52/48 split is drift.
+5. **Viewport.** Mock Greater São Paulo bounds, not the rental Centro geofence.
+6. **Routing.** Header tabs stay as designed. `react-router-dom` underneath: `/`, `/carteira`,
+   `/carteira/:id`.
+7. **SSE.** `GET /api/stream?fleet=rental|leasing`. One EventSource; server pushes only that
+   fleet. Tab swap is a controlled reconnect, not `STREAM CAIU`.
+8. **MQTT.** `leasing/{vin}/telemetry|commands|ack`. Fleets never share topics.
+9. **Refuse rate.** About 15% on reachable leasing block executions, plus the incident scheduler.
+10. **CORS.** Same-origin. Caddy serves UI and API on one host. SSE cap 64.
 
 ## Mock-only logic
 
-Not part of any future build: the 50 contracts generated in the constructor, the simulated
-calendar, vehicle movement, the random block outcome, the stream drop and the client-side guard
-evaluation. The mock is visual truth only.
+Not part of any future build: the 50 contracts generated in the constructor, client-side
+vehicle movement, the random block outcome, the editor-driven stream drop, the editor
+calendar-speed props, and client-side guard evaluation. The visual chip, tokens, layout,
+markers, dialog, and copy are the contract; the server owns calendar, motion, outcomes,
+and refusals.
