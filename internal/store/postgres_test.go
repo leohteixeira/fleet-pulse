@@ -5,10 +5,12 @@ import (
 	"os/exec"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
@@ -193,4 +195,158 @@ func publicTables(t *testing.T, dsn string) []string {
 		t.Fatalf("iterate tables: %v", err)
 	}
 	return names
+}
+
+func TestPostgres_PersistCommandAuditOutboxOneTx(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx := t.Context()
+	pg, err := store.Open(ctx, dsn, nil)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(pg.Close)
+
+	if err := pg.SeedBook(ctx, []store.LeasingVehicle{{
+		VIN:       "FPULSELSG00000001",
+		DisplayID: "L01",
+		Plate:     "LCS0B01",
+		Model:     "Fiat Argo",
+	}}, nil); err != nil {
+		t.Fatalf("seed leasing vin: %v", err)
+	}
+
+	rec := block.Record{
+		ID:            "cmd-lease-1",
+		VIN:           "FPULSELSG00000001",
+		Action:        block.ActionBlock,
+		State:         block.StateSent,
+		CorrelationID: "corr-1",
+		SentAt:        time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC),
+	}
+	if err := pg.Persist(ctx, block.PersistWrite{
+		Command: rec,
+		Insert:  true,
+		SentAt:  rec.SentAt,
+		Audit:   block.AuditEntry{Action: "block.SENT", Payload: []byte(`{"origin":"SISTEMA"}`)},
+		Outbox:  &block.OutboxEntry{Topic: block.Topic(rec.VIN), Payload: []byte(`{"id":"cmd-lease-1"}`)},
+	}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	got, ok, err := pg.GetCommand(ctx, rec.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetCommand() = %v ok=%v err=%v", got, ok, err)
+	}
+	if got.State != block.StateSent || got.VIN != rec.VIN {
+		t.Fatalf("stored command = %+v", got)
+	}
+	rows, err := pg.ListUnsent(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListUnsent: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Topic != block.Topic(rec.VIN) {
+		t.Fatalf("unsent = %+v, want one leasing topic", rows)
+	}
+
+	if err := pg.Persist(ctx, block.PersistWrite{
+		Command: block.Record{ID: "bad", VIN: "MISSING", Action: block.ActionBlock, State: block.StateRequested},
+		Insert:  true,
+		Audit:   block.AuditEntry{Action: "block.REQUESTED", Payload: []byte(`{}`)},
+		Outbox:  &block.OutboxEntry{Topic: "leasing/MISSING/commands", Payload: []byte(`{}`)},
+	}); err == nil {
+		t.Fatal("persist unknown vin: expected error")
+	}
+	rows, err = pg.ListUnsent(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListUnsent after rollback: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("outbox after failed persist = %d, want 1 (rollback)", len(rows))
+	}
+
+	snap := pg.Snapshot()
+	if len(snap.Vehicles) != 0 {
+		t.Fatalf("rental snapshot = %d, want 0 after leasing persist", len(snap.Vehicles))
+	}
+
+	active, err := pg.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != rec.ID || active[0].State != block.StateSent {
+		t.Fatalf("ListActive = %+v, want SENT %s", active, rec.ID)
+	}
+
+	rec.State = block.StateAcked
+	if err := pg.Persist(ctx, block.PersistWrite{
+		Command: rec,
+		Insert:  false,
+		Audit:   block.AuditEntry{Action: "block.ACKED", Payload: []byte(`{"origin":"SISTEMA"}`)},
+	}); err != nil {
+		t.Fatalf("persist update: %v", err)
+	}
+
+	got, ok, err = pg.GetCommand(ctx, rec.ID)
+	if err != nil || !ok || got.State != block.StateAcked || got.VIN != rec.VIN {
+		t.Fatalf("GetCommand after update = %+v ok=%v err=%v", got, ok, err)
+	}
+
+	active, err = pg.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive after ACKED: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("ListActive after ACKED = %+v, want empty", active)
+	}
+
+	acked, err := pg.ListLatestAcked(ctx)
+	if err != nil {
+		t.Fatalf("ListLatestAcked: %v", err)
+	}
+	if len(acked) != 1 || acked[0].ID != rec.ID || acked[0].State != block.StateAcked {
+		t.Fatalf("ListLatestAcked = %+v, want ACKED %s", acked, rec.ID)
+	}
+
+	if err := pg.MarkSent(ctx, rows[0].ID, time.Date(2026, 9, 21, 12, 0, 1, 0, time.UTC)); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+	unsent, err := pg.ListUnsent(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListUnsent after MarkSent: %v", err)
+	}
+	if len(unsent) != 0 {
+		t.Fatalf("ListUnsent after MarkSent = %+v, want empty", unsent)
+	}
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("audit inspect pool: %v", err)
+	}
+	var audits int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log`).Scan(&audits); err != nil {
+		pool.Close()
+		t.Fatalf("count audit_log: %v", err)
+	}
+	pool.Close()
+	if audits < 1 {
+		t.Fatalf("audit_log rows = %d, want at least 1", audits)
+	}
+
+	pg.Seed(rosterFromSim(sim.NewFleet()))
+	if err := pg.UpsertTelem(ctx, block.LastKnown{
+		VIN:      rec.VIN,
+		Lat:      -23.55,
+		Lng:      -46.63,
+		Speed:    14,
+		Ignition: true,
+	}); err != nil {
+		t.Fatalf("UpsertTelem: %v", err)
+	}
+	snap = pg.Snapshot()
+	if len(snap.Vehicles) != sim.FleetSize {
+		t.Fatalf("rental snapshot after UpsertTelem = %d, want %d", len(snap.Vehicles), sim.FleetSize)
+	}
+	if hasVIN(snap, rec.VIN) {
+		t.Fatal("Snapshot included leasing VIN after UpsertTelem")
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
 	"github.com/leohteixeira/fleet-pulse/internal/book"
 	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
@@ -600,6 +601,79 @@ func TestHandler_GetCommand(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+type fakeLeasing struct {
+	rec block.Record
+}
+
+func (f fakeLeasing) Get(id string) (block.Record, bool) {
+	if f.rec.ID == id {
+		return f.rec, true
+	}
+	return block.Record{}, false
+}
+
+func TestHandler_GetLeasingCommand(t *testing.T) {
+	t.Parallel()
+
+	lease := fakeLeasing{rec: block.Record{
+		ID:            "lease-1",
+		VIN:           "FPULSELSG00000001",
+		Action:        block.ActionBlock,
+		State:         block.StateArmed,
+		CorrelationID: "corr-lease",
+	}}
+	h := httpapi.New(
+		fakeStore{snap: seededSnapshot()},
+		httpapi.NewHub(),
+		nil,
+		nil,
+		httpapi.WithLeasingCommands(lease),
+	).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commands/lease-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.Bytes())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range []string{"id", "vin", "action", "state", "correlationId"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("missing key %q in %s", key, rec.Body.Bytes())
+		}
+	}
+	if body["id"] != "lease-1" || body["action"] != "block" || body["state"] != "ARMED" {
+		t.Fatalf("body = %v", body)
+	}
+
+	miss := httptest.NewRecorder()
+	h.ServeHTTP(miss, httptest.NewRequest(http.MethodGet, "/api/commands/missing", nil))
+	if miss.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404", miss.Code)
+	}
+
+	snapRec := httptest.NewRecorder()
+	h.ServeHTTP(snapRec, httptest.NewRequest(http.MethodGet, "/api/vehicles", nil))
+	if snapRec.Code != http.StatusOK {
+		t.Fatalf("vehicles status = %d, want 200", snapRec.Code)
+	}
+	var snap store.Snapshot
+	if err := json.Unmarshal(snapRec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if len(snap.Vehicles) != sim.FleetSize {
+		t.Fatalf("len(vehicles) = %d, want %d", len(snap.Vehicles), sim.FleetSize)
+	}
+	for _, v := range snap.Vehicles {
+		if strings.HasPrefix(v.VIN, "FPULSELSG") {
+			t.Fatalf("snapshot contains leasing vin %q", v.VIN)
+		}
 	}
 }
 

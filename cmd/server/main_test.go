@@ -60,11 +60,13 @@ func TestOrderlyShutdown_DrainsSSEFirst(t *testing.T) {
 	httpDone := make(chan struct{})
 	close(httpDone)
 	err := orderlyShutdown(shutdownHooks{
-		drain:    func() { order = append(order, "drain") },
-		stopHTTP: func() { order = append(order, "http") },
-		httpDone: httpDone,
-		stopSim:  func() { order = append(order, "sim") },
-		wait:     func() { order = append(order, "wait") },
+		drain:      func() { order = append(order, "drain") },
+		stopHTTP:   func() { order = append(order, "http") },
+		httpDone:   httpDone,
+		stopSim:    func() { order = append(order, "sim") },
+		flushRelay: func() { order = append(order, "flush") },
+		stopRelay:  func() { order = append(order, "relay") },
+		wait:       func() { order = append(order, "wait") },
 		closeBro: func() error {
 			order = append(order, "broker")
 			return nil
@@ -74,7 +76,7 @@ func TestOrderlyShutdown_DrainsSSEFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("orderlyShutdown() error = %v", err)
 	}
-	want := []string{"drain", "http", "sim", "wait", "broker", "pool"}
+	want := []string{"drain", "http", "sim", "flush", "relay", "wait", "broker", "pool"}
 	if len(order) != len(want) {
 		t.Fatalf("order = %v, want %v", order, want)
 	}

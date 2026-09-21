@@ -651,6 +651,126 @@ func TestNewFleets_ReproducibleSeed(t *testing.T) {
 	}
 }
 
+func TestStepVehicle_BlockedAndUnlockPendingStayStill(t *testing.T) {
+	t.Parallel()
+
+	blocked := Vehicle{
+		VIN:      "FPULSELSG00000001",
+		Prefix:   PrefixLeasing,
+		Lat:      CentroLat,
+		Lng:      CentroLng,
+		Speed:    36,
+		Ignition: true,
+		blocked:  true,
+		RouteID:  routes.Default().RouteIDs()[0],
+	}
+	stepVehicle(&blocked)
+	if blocked.Lat != CentroLat || blocked.Lng != CentroLng {
+		t.Fatalf("blocked moved to (%v,%v)", blocked.Lat, blocked.Lng)
+	}
+	if blocked.Ignition {
+		t.Fatal("blocked vehicle ignited")
+	}
+
+	pending := Vehicle{
+		VIN:           "FPULSELSG00000002",
+		Prefix:        PrefixLeasing,
+		Lat:           CentroLat,
+		Lng:           CentroLng,
+		Speed:         36,
+		Ignition:      true,
+		unlockPending: true,
+		RouteID:       routes.Default().RouteIDs()[0],
+	}
+	stepVehicle(&pending)
+	if pending.Lat != CentroLat || pending.Lng != CentroLng {
+		t.Fatalf("unlock-pending moved to (%v,%v)", pending.Lat, pending.Lng)
+	}
+	if pending.Ignition {
+		t.Fatal("unlock-pending vehicle ignited")
+	}
+}
+
+func TestAckCommand_RefuseBlockLeavesVehicleFree(t *testing.T) {
+	t.Parallel()
+
+	vehicle := NewLeasingFleet()[0]
+	vehicle.refuse = func() bool { return true }
+	startLat, startLng := vehicle.Lat, vehicle.Lng
+	var acks []bool
+	pub := publisherFunc(func(_ context.Context, topic string, payload []byte) error {
+		if !strings.HasSuffix(topic, "/ack") {
+			return nil
+		}
+		var body struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			t.Errorf("ack json: %v", err)
+		}
+		acks = append(acks, body.OK)
+		return nil
+	})
+
+	if err := ackCommand(t.Context(), &vehicle, []byte(`{"id":"blk-refuse","action":"block"}`), pub); err != nil {
+		t.Fatalf("ackCommand() error = %v", err)
+	}
+	if len(acks) != 1 || acks[0] {
+		t.Fatalf("acks = %v, want one refused block", acks)
+	}
+	if vehicle.blocked {
+		t.Fatal("vehicle blocked after RefuseBlock")
+	}
+	if !vehicle.Ignition || vehicle.Speed <= 0 {
+		t.Fatalf("after refuse: ignition=%v speed=%d, want usable motion", vehicle.Ignition, vehicle.Speed)
+	}
+	stepVehicle(&vehicle)
+	if vehicle.Lat == startLat && vehicle.Lng == startLng {
+		t.Fatal("stepVehicle did not change lat/lng after refused block")
+	}
+}
+
+func TestAckCommand_BlockThenUnlock(t *testing.T) {
+	t.Parallel()
+
+	vehicle := NewLeasingFleet()[0]
+	vehicle.refuse = func() bool { return false }
+	var acks []bool
+	pub := publisherFunc(func(_ context.Context, topic string, _ []byte) error {
+		if strings.HasSuffix(topic, "/ack") {
+			acks = append(acks, true)
+		}
+		return nil
+	})
+
+	if err := ackCommand(t.Context(), &vehicle, []byte(`{"id":"blk-ok","action":"block"}`), pub); err != nil {
+		t.Fatalf("block ack: %v", err)
+	}
+	if !vehicle.blocked || vehicle.Ignition || vehicle.Speed != 0 {
+		t.Fatalf("after block: blocked=%v ignition=%v speed=%d", vehicle.blocked, vehicle.Ignition, vehicle.Speed)
+	}
+	lat, lng := vehicle.Lat, vehicle.Lng
+	stepVehicle(&vehicle)
+	if vehicle.Lat != lat || vehicle.Lng != lng {
+		t.Fatalf("acked block moved to (%v,%v)", vehicle.Lat, vehicle.Lng)
+	}
+
+	if err := ackCommand(t.Context(), &vehicle, []byte(`{"id":"unl-ok","action":"unlock"}`), pub); err != nil {
+		t.Fatalf("unlock ack: %v", err)
+	}
+	if vehicle.blocked || vehicle.unlockPending {
+		t.Fatal("vehicle still blocked after unlock ack")
+	}
+	if !vehicle.Ignition || vehicle.Speed <= 0 {
+		t.Fatalf("after unlock: ignition=%v speed=%d, want motion restored", vehicle.Ignition, vehicle.Speed)
+	}
+	lat, lng = vehicle.Lat, vehicle.Lng
+	stepVehicle(&vehicle)
+	if vehicle.Lat == lat && vehicle.Lng == lng {
+		t.Fatal("stepVehicle did not change lat/lng after unlock ack")
+	}
+}
+
 func TestVehicle_RefuseBlock(t *testing.T) {
 	t.Setenv("SIM_SEED", "1")
 
