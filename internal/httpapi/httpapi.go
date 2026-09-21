@@ -21,9 +21,15 @@ import (
 // ListenAddr is the process bind address for the HTTP API.
 const ListenAddr = "0.0.0.0:8300"
 
-// Store is the snapshot port declared by HTTP and implemented by the in-memory store.
+// Store is the snapshot port declared by HTTP and implemented by the fleet store.
 type Store interface {
 	Snapshot() store.Snapshot
+}
+
+// Ready is the readiness port declared by HTTP so healthz can ping the pool
+// without the store declaring HTTP types.
+type Ready interface {
+	Ping(ctx context.Context) error
 }
 
 // HubPort is the publish/subscribe port the stream handler uses.
@@ -44,15 +50,16 @@ type Server struct {
 	store    Store
 	hub      HubPort
 	unlocker Unlocker
+	ready    Ready
 	files    fs.FS
 }
 
-// New wires consumer-owned store, hub, and command ports.
-func New(store Store, hub HubPort, unlocker Unlocker) *Server {
+// New wires consumer-owned store, hub, command, and ready ports.
+func New(store Store, hub HubPort, unlocker Unlocker, ready Ready) *Server {
 	if hub == nil {
 		hub = NewHub()
 	}
-	return &Server{store: store, hub: hub, unlocker: unlocker, files: webui.FS()}
+	return &Server{store: store, hub: hub, unlocker: unlocker, ready: ready, files: webui.FS()}
 }
 
 // Handler registers snapshot, lock, unlock, command lookup, stream, health, and the SPA.
@@ -113,7 +120,18 @@ func (s *Server) vehicles(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	if s.ready == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.ready.Ping(ctx); err != nil {
+		slog.Error("healthz ping failed")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

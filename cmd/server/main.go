@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -26,11 +27,22 @@ var (
 	_ ingest.Subscriber = (*broker.Broker)(nil)
 	_ ingest.Sink       = telemetrySink{}
 	_ ingest.AckSink    = (*command.Service)(nil)
-	_ httpapi.Store     = (*store.Memory)(nil)
+	_ httpapi.Store     = (*store.Postgres)(nil)
+	_ httpapi.Ready     = (*store.Postgres)(nil)
 	_ httpapi.Unlocker  = (*command.Service)(nil)
 	_ command.Publisher = (*broker.Broker)(nil)
-	_ command.Vehicles  = (*store.Memory)(nil)
+	_ command.Vehicles  = (*store.Postgres)(nil)
 )
+
+var errDatabaseURLRequired = errors.New("database_url is required")
+
+func requireDatabaseURL() (string, error) {
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		return "", errDatabaseURLRequired
+	}
+	return dsn, nil
+}
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -46,16 +58,25 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	dsn, err := requireDatabaseURL()
+	if err != nil {
+		return err
+	}
+	pg, err := store.Open(ctx, dsn, log)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer pg.Close()
+	pg.Seed(rosterFromSim(sim.NewFleet()))
+
 	b := broker.New(defaultBindAddr, log)
 	if err := b.Start(ctx); err != nil {
 		return fmt.Errorf("start broker: %w", err)
 	}
 
-	mem := store.New()
-	mem.Seed(rosterFromSim(sim.NewFleet()))
 	hub := httpapi.NewHub()
-	sink := telemetrySink{mem: mem, hub: hub}
-	cmds := command.New(b, mem, log)
+	sink := telemetrySink{mem: pg, hub: hub}
+	cmds := command.New(b, pg, log)
 	cmds.SetListener(func(rec command.Record) {
 		data, err := json.Marshal(rec)
 		if err != nil {
@@ -81,7 +102,7 @@ func run(log *slog.Logger) error {
 
 	httpCtx, stopHTTP := context.WithCancel(context.Background())
 	simCtx, stopSim := context.WithCancel(context.Background())
-	handler := httpapi.New(mem, hub, cmds).Handler()
+	handler := httpapi.New(pg, hub, cmds, pg).Handler()
 	httpDone := make(chan struct{})
 	wg.Go(func() {
 		defer close(httpDone)
@@ -108,12 +129,13 @@ func run(log *slog.Logger) error {
 	}
 
 	shutErr := orderlyShutdown(shutdownHooks{
-		drain:    hub.Drain,
-		stopHTTP: stopHTTP,
-		httpDone: httpDone,
-		stopSim:  stopSim,
-		wait:     wg.Wait,
-		closeBro: b.Close,
+		drain:     hub.Drain,
+		stopHTTP:  stopHTTP,
+		httpDone:  httpDone,
+		stopSim:   stopSim,
+		wait:      wg.Wait,
+		closeBro:  b.Close,
+		closePool: pg.Close,
 	})
 	for {
 		select {
@@ -126,12 +148,13 @@ func run(log *slog.Logger) error {
 }
 
 type shutdownHooks struct {
-	drain    func()
-	stopHTTP func()
-	httpDone <-chan struct{}
-	stopSim  func()
-	wait     func()
-	closeBro func() error
+	drain     func()
+	stopHTTP  func()
+	httpDone  <-chan struct{}
+	stopSim   func()
+	wait      func()
+	closeBro  func() error
+	closePool func()
 }
 
 func orderlyShutdown(h shutdownHooks) error {
@@ -150,13 +173,16 @@ func orderlyShutdown(h shutdownHooks) error {
 	if h.wait != nil {
 		h.wait()
 	}
-	if h.closeBro == nil {
-		return nil
+	var broErr error
+	if h.closeBro != nil {
+		if err := h.closeBro(); err != nil {
+			broErr = fmt.Errorf("close broker: %w", err)
+		}
 	}
-	if err := h.closeBro(); err != nil {
-		return fmt.Errorf("close broker: %w", err)
+	if h.closePool != nil {
+		h.closePool()
 	}
-	return nil
+	return broErr
 }
 
 type readySub struct {
@@ -192,8 +218,12 @@ func (s *readySub) Subscribe(ctx context.Context, filter string, handler ingest.
 	return nil
 }
 
+type fleetApply interface {
+	Apply(store.Vehicle) (store.Vehicle, bool)
+}
+
 type telemetrySink struct {
-	mem *store.Memory
+	mem fleetApply
 	hub *httpapi.Hub
 }
 
