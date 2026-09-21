@@ -110,20 +110,12 @@ export function App() {
           <Kpi label="Pendentes" value={kpis.pendentes} tone="accent" />
         </div>
         <div className="header-tools">
+          <ThemeToggle theme={theme} onChange={setTheme} />
           <span className={`stream-pill${stream.live ? ' is-live' : ' is-down'}`}>
             <span className="stream-dot" />
             {stream.live ? STREAM_LIVE : STREAM_DOWN(stream.retries)}
             {stream.live ? <span className="stream-clock">{formatClock(now)}</span> : null}
           </span>
-          <button
-            type="button"
-            className="theme-toggle"
-            aria-pressed={theme === 'light'}
-            aria-label={theme === 'light' ? 'Ativar tema escuro' : 'Ativar tema claro'}
-            onClick={() => setTheme((current) => (current === 'light' ? 'dark' : 'light'))}
-          >
-            {theme === 'light' ? 'Escuro' : 'Claro'}
-          </button>
         </div>
       </header>
       {error ? (
@@ -168,6 +160,38 @@ export function App() {
           />
         </>
       )}
+    </div>
+  );
+}
+
+function ThemeToggle({ theme, onChange }: { theme: Theme; onChange: (theme: Theme) => void }) {
+  const light = theme === 'light';
+  return (
+    <div className="theme-toggle" role="group" aria-label="Tema">
+      <span className={`theme-knob${light ? ' is-light' : ''}`} aria-hidden="true" />
+      <button
+        type="button"
+        className={`theme-opt${light ? ' is-active' : ''}`}
+        title="Tema claro"
+        aria-pressed={light}
+        onClick={() => onChange('light')}
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+          <circle cx="7" cy="7" r="2.6" />
+          <path d="M7 1v1.6M7 11.4V13M1 7h1.6M11.4 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M2.8 11.2l1.1-1.1M10.1 3.9l1.1-1.1" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className={`theme-opt${!light ? ' is-active' : ''}`}
+        title="Tema escuro"
+        aria-pressed={!light}
+        onClick={() => onChange('dark')}
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true">
+          <path d="M11.5 8.6A5 5 0 0 1 5.4 2.5a5 5 0 1 0 6.1 6.1z" />
+        </svg>
+      </button>
     </div>
   );
 }
