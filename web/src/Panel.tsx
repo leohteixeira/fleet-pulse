@@ -1,3 +1,4 @@
+import { commandsBlocked } from './stream';
 import {
   PRESENTATION_LABELS,
   commandButtons,
@@ -17,6 +18,7 @@ type PanelProps = {
   commands: Command[] | undefined;
   now: number;
   doorFlash: 'ok' | 'err' | null;
+  streamLive?: boolean;
   onClose: () => void;
   onUnlock: () => void;
   onLock: () => void;
@@ -28,6 +30,7 @@ export function Panel({
   commands,
   now,
   doorFlash,
+  streamLive = true,
   onClose,
   onUnlock,
   onLock,
@@ -135,7 +138,7 @@ export function Panel({
           <button
             type="button"
             className={`btn-primary${inFlight?.state === 'PENDING' && inFlight.action === 'unlock' ? ' is-pending' : ''}`}
-            disabled={buttons.unlockDisabled}
+            disabled={commandsBlocked(streamLive) || buttons.unlockDisabled}
             onClick={onUnlock}
           >
             {inFlight?.state === 'PENDING' && inFlight.action === 'unlock' ? <span className="fp-spin" /> : null}
@@ -144,7 +147,7 @@ export function Panel({
           <button
             type="button"
             className={`btn-secondary${inFlight?.state === 'PENDING' && inFlight.action === 'lock' ? ' is-pending' : ''}`}
-            disabled={buttons.lockDisabled}
+            disabled={commandsBlocked(streamLive) || buttons.lockDisabled}
             onClick={onLock}
           >
             {inFlight?.state === 'PENDING' && inFlight.action === 'lock' ? <span className="fp-spin" /> : null}

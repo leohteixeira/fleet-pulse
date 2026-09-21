@@ -2,6 +2,7 @@ import L from 'leaflet';
 import { useEffect, useRef } from 'react';
 import { MapContainer, Rectangle, TileLayer, useMap } from 'react-leaflet';
 
+import { shouldUpdateLatLng, tileURL } from './mapChrome';
 import {
   PRESENTATION_LABELS,
   deriveState,
@@ -12,9 +13,6 @@ import {
   type Vehicle,
 } from './state';
 
-const ESRI_DARK_GRAY =
-  'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
-
 const CAR_BODY =
   'M6 .5C9 .5 10.5 1.6 10.8 3.6L11.3 8V19C11.3 20.9 9.8 21.5 6 21.5C2.2 21.5 .7 20.9 .7 19V8L1.2 3.6C1.5 1.6 3 .5 6 .5Z';
 const CAR_GLASS = 'M2.2 6.2h7.6L9 10H3z M2.6 15.5h6.8v2.5H2.6z';
@@ -24,16 +22,35 @@ type MapViewProps = {
   vehicles: Vehicle[];
   selectedVin: string | null;
   now: number;
+  theme: 'dark' | 'light';
+  frozen: boolean;
+  freezeCopy: string;
   onSelect: (vin: string | null) => void;
 };
 
-export function MapView({ polygon, vehicles, selectedVin, now, onSelect }: MapViewProps) {
+export function MapView({
+  polygon,
+  vehicles,
+  selectedVin,
+  now,
+  theme,
+  frozen,
+  freezeCopy,
+  onSelect,
+}: MapViewProps) {
   const center: [number, number] = [
     (polygon.south + polygon.north) / 2,
     (polygon.west + polygon.east) / 2,
   ];
 
   return (
+    <div className="map-wrap">
+      {frozen ? <div className="map-band" aria-hidden="true" /> : null}
+      {frozen ? (
+        <div className="map-freeze" role="status">
+          {freezeCopy}
+        </div>
+      ) : null}
     <MapContainer
       className="map"
       center={center}
@@ -41,7 +58,12 @@ export function MapView({ polygon, vehicles, selectedVin, now, onSelect }: MapVi
       zoomControl
       attributionControl
     >
-      <TileLayer url={ESRI_DARK_GRAY} attribution="© Esri, HERE, OpenStreetMap" maxZoom={16} />
+      <TileLayer
+        key={theme}
+        url={tileURL(theme)}
+        attribution="© Esri, HERE, OpenStreetMap"
+        maxZoom={16}
+      />
       <Rectangle
         bounds={[
           [polygon.south, polygon.west],
@@ -62,9 +84,11 @@ export function MapView({ polygon, vehicles, selectedVin, now, onSelect }: MapVi
         polygon={polygon}
         selectedVin={selectedVin}
         now={now}
+        frozen={frozen}
         onSelect={onSelect}
       />
     </MapContainer>
+    </div>
   );
 }
 
@@ -78,12 +102,14 @@ function VehicleMarkers({
   polygon,
   selectedVin,
   now,
+  frozen,
   onSelect,
 }: {
   vehicles: Vehicle[];
   polygon: Polygon;
   selectedVin: string | null;
   now: number;
+  frozen: boolean;
   onSelect: (vin: string | null) => void;
 }) {
   const map = useMap();
@@ -120,7 +146,9 @@ function VehicleMarkers({
         markers.current.set(vehicle.vin, { marker, key });
         continue;
       }
-      existing.marker.setLatLng([vehicle.lat, vehicle.lng]);
+      if (shouldUpdateLatLng(frozen)) {
+        existing.marker.setLatLng([vehicle.lat, vehicle.lng]);
+      }
       if (plan === 'rebuild') {
         existing.marker.setIcon(makeIcon(vehicle, presentation, selected));
         existing.marker.setZIndexOffset(selected ? 1000 : 0);
@@ -134,7 +162,7 @@ function VehicleMarkers({
       entry.marker.remove();
       markers.current.delete(vin);
     }
-  }, [map, now, polygon, selectedVin, vehicles]);
+  }, [frozen, map, now, polygon, selectedVin, vehicles]);
 
   useEffect(() => {
     return () => {

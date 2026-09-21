@@ -12,20 +12,28 @@ import {
   type CommandAction,
   type Snapshot,
 } from './state';
+import { FREEZE_COPY, STREAM_DOWN, STREAM_LIVE, type StreamStatus } from './stream';
+import { applyTheme, readTheme, type Theme } from './theme';
 
 export const SNAPSHOT_ERROR = 'Não foi possível carregar a frota.';
 
 export type StreamSource = {
-  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
-  removeEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
+  addEventListener(type: string, listener: (event: Event) => void): void;
+  removeEventListener(type: string, listener: (event: Event) => void): void;
   close(): void;
 };
+
+export type { StreamStatus } from './stream';
+export { FREEZE_COPY, STREAM_DOWN, STREAM_LIVE, commandsBlocked } from './stream';
 
 export function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [doorFlash, setDoorFlash] = useState<'ok' | 'err' | null>(null);
+  const [theme, setTheme] = useState<Theme>(() => readTheme());
+  const [stream, setStream] = useState<StreamStatus>({ live: true, retries: 0 });
+  const [lastDataAt, setLastDataAt] = useState(() => Date.now());
   const flashFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -53,10 +61,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
     if (!state.polygon) {
       return;
     }
-    return connectTelemetry(dispatch, EventSource);
+    return connectTelemetry(dispatch, EventSource, (status) => {
+      setStream(status);
+      if (status.live) {
+        setLastDataAt(Date.now());
+      }
+    });
   }, [state.polygon]);
 
   const selected = state.selectedVin ? state.vehicles[state.selectedVin] : undefined;
@@ -92,6 +109,22 @@ export function App() {
           <Kpi label="Offline" value={kpis.offline} tone="idle" />
           <Kpi label="Pendentes" value={kpis.pendentes} tone="accent" />
         </div>
+        <div className="header-tools">
+          <span className={`stream-pill${stream.live ? ' is-live' : ' is-down'}`}>
+            <span className="stream-dot" />
+            {stream.live ? STREAM_LIVE : STREAM_DOWN(stream.retries)}
+            {stream.live ? <span className="stream-clock">{formatClock(now)}</span> : null}
+          </span>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-pressed={theme === 'light'}
+            aria-label={theme === 'light' ? 'Ativar tema escuro' : 'Ativar tema claro'}
+            onClick={() => setTheme((current) => (current === 'light' ? 'dark' : 'light'))}
+          >
+            {theme === 'light' ? 'Escuro' : 'Claro'}
+          </button>
+        </div>
       </header>
       {error ? (
         <p className="error" role="alert">
@@ -106,6 +139,9 @@ export function App() {
                 vehicles={vehicles}
                 selectedVin={state.selectedVin}
                 now={now}
+                theme={theme}
+                frozen={!stream.live}
+                freezeCopy={FREEZE_COPY(Math.max(0, Math.round((now - lastDataAt) / 1000)))}
                 onSelect={(vin) => dispatch({ type: 'select', vin })}
               />
             ) : (
@@ -117,6 +153,7 @@ export function App() {
               commands={selectedCommands}
               now={now}
               doorFlash={doorFlash}
+              streamLive={stream.live}
               onClose={() => dispatch({ type: 'select', vin: null })}
               onUnlock={() => void sendCommand(selected?.vin, 'unlock', dispatch)}
               onLock={() => void sendCommand(selected?.vin, 'lock', dispatch)}
@@ -156,26 +193,50 @@ export function Root() {
 export function connectTelemetry(
   dispatch: (action: Action) => void,
   EventSourceCtor: new (url: string) => StreamSource,
+  onStatus?: (status: StreamStatus) => void,
 ): () => void {
   const source = new EventSourceCtor('/api/stream');
-  const onTelemetry = (event: MessageEvent<string>) => {
-    dispatch({ type: 'patch', payload: event.data });
+  let retries = 0;
+  const markLive = () => {
+    retries = 0;
+    onStatus?.({ live: true, retries: 0 });
   };
-  const onCommand = (event: MessageEvent<string>) => {
-    dispatch({ type: 'command', payload: event.data });
+  const onTelemetry = (event: Event) => {
+    dispatch({ type: 'patch', payload: (event as MessageEvent<string>).data });
+    markLive();
   };
-  const onAreaExit = (event: MessageEvent<string>) => {
-    dispatch({ type: 'area-exit', payload: event.data });
+  const onCommand = (event: Event) => {
+    dispatch({ type: 'command', payload: (event as MessageEvent<string>).data });
+    markLive();
+  };
+  const onAreaExit = (event: Event) => {
+    dispatch({ type: 'area-exit', payload: (event as MessageEvent<string>).data });
+    markLive();
+  };
+  const onOpen = () => {
+    markLive();
+  };
+  const onError = () => {
+    retries = Math.min(retries + 1, 8);
+    onStatus?.({ live: false, retries });
   };
   source.addEventListener('telemetry', onTelemetry);
   source.addEventListener('command', onCommand);
   source.addEventListener('area-exit', onAreaExit);
+  source.addEventListener('open', onOpen);
+  source.addEventListener('error', onError);
   return () => {
     source.removeEventListener('telemetry', onTelemetry);
     source.removeEventListener('command', onCommand);
     source.removeEventListener('area-exit', onAreaExit);
+    source.removeEventListener('open', onOpen);
+    source.removeEventListener('error', onError);
     source.close();
   };
+}
+
+export function formatClock(now: number): string {
+  return new Date(now).toLocaleTimeString('pt-BR', { hour12: false });
 }
 
 const sending = new Set<string>();
