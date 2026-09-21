@@ -274,7 +274,7 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ctx := t.Context()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream?fleet=rental", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestHandler_SSEEventAndNoGzip(t *testing.T) {
 	}
 
 	payload := []byte(`{"vin":"FPULSESAO00000001","lat":-23.55,"lng":-46.63}`)
-	hub.Publish(httpapi.Event{Name: "telemetry", Data: payload})
+	hub.Publish(httpapi.Event{Name: "telemetry", Data: payload, Fleet: httpapi.FleetRental})
 
 	got, err := readSSE(resp.Body)
 	if err != nil {
@@ -717,7 +717,7 @@ func TestHub_Drain(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe := hub.Subscribe("")
 	t.Cleanup(unsubscribe)
 	hub.Drain()
 	if _, ok := <-events; ok {
@@ -729,7 +729,7 @@ func TestHub_DropOldest(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe := hub.Subscribe("")
 	t.Cleanup(unsubscribe)
 
 	const extra = 1
@@ -780,6 +780,27 @@ func (f fakeContracts) List(context.Context) ([]book.Contract, error) {
 		return []book.Contract{}, f.err
 	}
 	return f.list, f.err
+}
+
+func (f fakeContracts) Get(_ context.Context, id string) (book.Detail, error) {
+	for _, c := range f.list {
+		if c.ID == id {
+			return book.Detail{Contract: c, Installments: []book.InstallmentView{}, Audit: []book.AuditView{}}, f.err
+		}
+	}
+	return book.Detail{}, book.ErrNotFound
+}
+
+func (fakeContracts) Notify(context.Context, book.NotifyInput) (book.WriteResult, error) {
+	return book.WriteResult{}, book.ErrNotFound
+}
+
+func (fakeContracts) Pay(context.Context, book.PayInput) (book.PayResult, error) {
+	return book.PayResult{}, book.ErrNotFound
+}
+
+func (fakeContracts) AppendAudit(context.Context, book.AuditInput) (string, error) {
+	return "", nil
 }
 
 type fakeUnlocker struct {

@@ -100,7 +100,7 @@ func TestTelemetrySink_Apply(t *testing.T) {
 
 	mem := store.New()
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe := hub.Subscribe("")
 	t.Cleanup(unsubscribe)
 
 	const vin = "FPULSESAO00000001"
@@ -122,6 +122,9 @@ func TestTelemetrySink_Apply(t *testing.T) {
 	case ev := <-events:
 		if ev.Name != "telemetry" {
 			t.Fatalf("event name = %q, want telemetry", ev.Name)
+		}
+		if ev.Fleet != httpapi.FleetRental {
+			t.Fatalf("event fleet = %q, want %s", ev.Fleet, httpapi.FleetRental)
 		}
 		var body struct {
 			VIN string `json:"vin"`
@@ -148,7 +151,7 @@ func TestTelemetrySink_AreaExit(t *testing.T) {
 		Lng:       -46.63,
 	}})
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe()
+	events, unsubscribe := hub.Subscribe("")
 	t.Cleanup(unsubscribe)
 
 	telemetrySink{mem: mem, hub: hub}.Apply(ingest.Telemetry{
@@ -163,6 +166,9 @@ func TestTelemetrySink_AreaExit(t *testing.T) {
 	for range 2 {
 		select {
 		case ev := <-events:
+			if ev.Fleet != httpapi.FleetRental {
+				t.Fatalf("event fleet = %q, want %s", ev.Fleet, httpapi.FleetRental)
+			}
 			switch ev.Name {
 			case "telemetry":
 				gotTel = true

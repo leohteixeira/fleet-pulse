@@ -287,6 +287,161 @@ func TestList_NoRentalVIN(t *testing.T) {
 	}
 }
 
+func TestGet_UnknownAndDetail(t *testing.T) {
+	t.Parallel()
+
+	origin := clock.Origin
+	clk := clock.Fixed(clock.ParseRate(clock.Rate4h), origin, origin)
+	mem := newMemStore()
+	b := &Book{st: mem, clk: clk, seed: 1, log: New(mem, clk, nil).log}
+	id := mem.mustContract(t, "FPULSELSG00000010", "Ana Costa", ProfileInadimplente, origin.AddDate(0, 0, -10), []store.SeedInstallment{
+		{DueOn: origin.AddDate(0, 0, -10), Amount: defaultInstallment},
+		{DueOn: origin.AddDate(0, 1, 0), Amount: defaultInstallment},
+	})
+
+	if _, err := b.Get(t.Context(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown get err = %v, want ErrNotFound", err)
+	}
+	got, err := b.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ID != id || got.DaysLate != 10 || got.OverdueBand != Band115 {
+		t.Fatalf("detail = %+v, want 10d 1_15", got.Contract)
+	}
+	if len(got.Installments) != 2 {
+		t.Fatalf("installments = %d, want 2", len(got.Installments))
+	}
+	if got.Audit == nil {
+		t.Fatal("audit slice is nil")
+	}
+}
+
+func TestNotify_ThenRegularizaPaysOnTick(t *testing.T) {
+	t.Parallel()
+
+	origin := clock.Origin
+	due := origin.AddDate(0, 0, -20)
+	clk := clock.Fixed(clock.ParseRate(clock.Rate4h), origin, origin)
+	mem := newMemStore()
+	b := &Book{st: mem, clk: clk, seed: 1, log: New(mem, clk, nil).log}
+	id := mem.mustContract(t, "FPULSELSG00000011", "Carla Souza", ProfileRegulariza, due, []store.SeedInstallment{
+		{DueOn: due, Amount: defaultInstallment},
+	})
+	mem.mustContract(t, "FPULSELSG00000015", "Gina Prado", ProfileRegulariza, due, []store.SeedInstallment{
+		{DueOn: due, Amount: defaultInstallment},
+	})
+	mem.mustContract(t, "FPULSELSG00000016", "Hugo Dias", ProfileInadimplente, due, []store.SeedInstallment{
+		{DueOn: due, Amount: defaultInstallment},
+	})
+
+	if err := b.Tick(t.Context()); err != nil {
+		t.Fatalf("tick before notify: %v", err)
+	}
+	if mem.paymentCount() != 0 {
+		t.Fatal("regulariza paid before notify")
+	}
+
+	res, err := b.Notify(t.Context(), NotifyInput{ID: id, Origin: OriginVisitor, VisitorHash: "abc"})
+	if err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if res.Action != ActionNotify || res.ID == "" {
+		t.Fatalf("notify result = %+v", res)
+	}
+	detail, err := b.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("get after notify: %v", err)
+	}
+	if len(detail.Audit) != 1 || detail.Audit[0].Origin != OriginVisitor || detail.Audit[0].VisitorHash != "abc" {
+		t.Fatalf("audit = %+v, want VISITANTE hash abc", detail.Audit)
+	}
+	if detail.LastNotify.IsZero() {
+		t.Fatal("last notify is zero")
+	}
+
+	if err := b.Tick(t.Context()); err != nil {
+		t.Fatalf("tick after notify: %v", err)
+	}
+	if mem.paymentCount() != 1 {
+		t.Fatalf("payments = %d, want 1 after regulariza notify", mem.paymentCount())
+	}
+	list, err := b.List(t.Context())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var paid Contract
+	for _, c := range list {
+		if c.ID == id {
+			paid = c
+			break
+		}
+	}
+	if paid.ID != id || paid.DaysLate != 0 {
+		t.Fatalf("after pay = %+v, want id=%s daysLate=0", list, id)
+	}
+}
+
+func TestPay_OldestOverdueAndHorizon(t *testing.T) {
+	t.Parallel()
+
+	origin := clock.Origin
+	clk := clock.Fixed(clock.ParseRate(clock.Rate4h), origin, origin)
+	mem := newMemStore()
+	b := &Book{st: mem, clk: clk, seed: 1, log: New(mem, clk, nil).log}
+	overdue := origin.AddDate(0, 0, -3)
+	soon := origin.AddDate(0, 0, 4)
+	later := origin.AddDate(0, 0, 20)
+	id := mem.mustContract(t, "FPULSELSG00000012", "Diego Alves", ProfileInadimplente, overdue, []store.SeedInstallment{
+		{DueOn: later, Amount: defaultInstallment},
+		{DueOn: overdue, Amount: defaultInstallment},
+		{DueOn: soon, Amount: defaultInstallment},
+	})
+
+	first, err := b.Pay(t.Context(), PayInput{ID: id, Origin: OriginVisitor, VisitorHash: "h1"})
+	if err != nil {
+		t.Fatalf("pay overdue: %v", err)
+	}
+	if first.DaysLate != 0 {
+		t.Fatalf("daysLate after oldest pay = %d, want 0 (remaining dues are future)", first.DaysLate)
+	}
+
+	id2 := mem.mustContract(t, "FPULSELSG00000013", "Eva Nunes", ProfileInadimplente, later, []store.SeedInstallment{
+		{DueOn: later, Amount: defaultInstallment},
+	})
+	if _, err := b.Pay(t.Context(), PayInput{ID: id2}); !errors.Is(err, ErrPaymentNotDue) {
+		t.Fatalf("far due pay err = %v, want ErrPaymentNotDue", err)
+	}
+
+	id3 := mem.mustContract(t, "FPULSELSG00000014", "Fábio Reis", ProfileInadimplente, soon, []store.SeedInstallment{
+		{DueOn: soon, Amount: defaultInstallment},
+	})
+	got, err := b.Pay(t.Context(), PayInput{ID: id3, Origin: OriginVisitor})
+	if err != nil {
+		t.Fatalf("pay due within 5 days: %v", err)
+	}
+	if got.VIN != "FPULSELSG00000014" || got.DaysLate != 0 {
+		t.Fatalf("horizon pay = %+v", got)
+	}
+}
+
+func TestFilterByBand(t *testing.T) {
+	t.Parallel()
+
+	list := []Contract{
+		{ID: "a", OverdueBand: BandEmDia},
+		{ID: "b", OverdueBand: Band1630},
+		{ID: "c", OverdueBand: Band1630},
+	}
+	got := FilterByBand(list, Band1630)
+	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "c" {
+		t.Fatalf("filter = %+v, want b and c", got)
+	}
+	if len(FilterByBand(list, "")) != 3 {
+		t.Fatal("empty band should keep all")
+	}
+}
+
 func TestBandOfAndFloorNeed(t *testing.T) {
 	t.Parallel()
 
@@ -360,6 +515,8 @@ type memStore struct {
 	contracts    map[string]store.ContractRow
 	installments []store.InstallmentRow
 	payments     []store.PaymentRow
+	audits       []store.AuditRow
+	auditSeq     int64
 	failVehicles bool
 	failPayments bool
 }
@@ -547,6 +704,84 @@ func (m *memStore) ListFreeLeasingVins(context.Context) ([]string, error) {
 		if !used[v.VIN] {
 			out = append(out, v.VIN)
 		}
+	}
+	return out, nil
+}
+
+func (m *memStore) GetContract(_ context.Context, id string) (store.ContractRow, bool, error) {
+	c, ok := m.contracts[id]
+	return c, ok, nil
+}
+
+func (m *memStore) ListInstallmentsByContract(_ context.Context, id string) ([]store.InstallmentRow, error) {
+	out := []store.InstallmentRow{}
+	for _, inst := range m.installments {
+		if inst.ContractID == id {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) ListPaymentsByContract(_ context.Context, id string) ([]store.PaymentRow, error) {
+	out := []store.PaymentRow{}
+	for _, p := range m.payments {
+		if p.ContractID == id {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) ListAuditByContract(_ context.Context, id string) ([]store.AuditRow, error) {
+	out := []store.AuditRow{}
+	for _, a := range m.audits {
+		if a.ContractID == id {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) InsertAudit(_ context.Context, in store.AuditInsert) (string, error) {
+	m.auditSeq++
+	row := store.AuditRow{
+		ID:          m.auditSeq,
+		ContractID:  in.ContractID,
+		Action:      in.Action,
+		Payload:     in.Payload,
+		VisitorHash: in.VisitorHash,
+		CreatedAt:   time.Now().UTC(),
+	}
+	m.audits = append(m.audits, row)
+	return fmt.Sprintf("%d", row.ID), nil
+}
+
+func (m *memStore) LastNotify(_ context.Context, id string) (store.NotifyRow, bool, error) {
+	for i := len(m.audits) - 1; i >= 0; i-- {
+		a := m.audits[i]
+		if a.ContractID == id && a.Action == store.AuditActionNotify {
+			return store.NotifyRow{ContractID: id, Payload: a.Payload, CreatedAt: a.CreatedAt}, true, nil
+		}
+	}
+	return store.NotifyRow{}, false, nil
+}
+
+func (m *memStore) ListLastNotifies(context.Context) ([]store.NotifyRow, error) {
+	seen := map[string]store.NotifyRow{}
+	for _, a := range m.audits {
+		if a.Action != store.AuditActionNotify {
+			continue
+		}
+		seen[a.ContractID] = store.NotifyRow{
+			ContractID: a.ContractID,
+			Payload:    a.Payload,
+			CreatedAt:  a.CreatedAt,
+		}
+	}
+	out := make([]store.NotifyRow, 0, len(seen))
+	for _, n := range seen {
+		out = append(out, n)
 	}
 	return out, nil
 }

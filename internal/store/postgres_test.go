@@ -50,6 +50,7 @@ func TestPostgres_PersistReloadAndMigrations(t *testing.T) {
 		"commands",
 		"contracts",
 		"customers",
+		"idempotency_keys",
 		"installments",
 		"outbox",
 		"payments",
@@ -348,5 +349,45 @@ func TestPostgres_PersistCommandAuditOutboxOneTx(t *testing.T) {
 	}
 	if hasVIN(snap, rec.VIN) {
 		t.Fatal("Snapshot included leasing VIN after UpsertTelem")
+	}
+}
+
+func TestPostgres_ListLeasingWithoutVehicleState(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx := t.Context()
+	pg, err := store.Open(ctx, dsn, nil)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(pg.Close)
+
+	const leaseVIN = "FPULSELSG00000099"
+	if err := pg.SeedBook(ctx, []store.LeasingVehicle{{
+		VIN:       leaseVIN,
+		DisplayID: "L99",
+		Plate:     "LCS0B99",
+		Model:     "Fiat Argo",
+	}}, nil); err != nil {
+		t.Fatalf("seed leasing: %v", err)
+	}
+	pg.Seed([]store.Vehicle{{
+		VIN:       "FPULSESAO00000001",
+		DisplayID: "V01",
+		Lat:       -23.55,
+		Lng:       -46.63,
+	}})
+
+	list, err := pg.ListLeasing(ctx)
+	if err != nil {
+		t.Fatalf("ListLeasing: %v", err)
+	}
+	if len(list) != 1 || list[0].VIN != leaseVIN {
+		t.Fatalf("ListLeasing = %+v, want only %s", list, leaseVIN)
+	}
+	if list[0].Lat != 0 || list[0].Lng != 0 {
+		t.Fatalf("last-known without vehicle_state = %+v, want zeros", list[0])
+	}
+	if hasVIN(pg.Snapshot(), leaseVIN) {
+		t.Fatal("rental snapshot included leasing VIN")
 	}
 }

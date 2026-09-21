@@ -19,3 +19,28 @@ func TestFS_HasIndexHTML(t *testing.T) {
 		t.Fatalf("embedded index.html missing root mount: %q", body)
 	}
 }
+
+func TestFS_StreamUsesRentalFleet(t *testing.T) {
+	t.Parallel()
+
+	found := false
+	err := fs.WalkDir(webui.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".js") {
+			return err
+		}
+		body, readErr := fs.ReadFile(webui.FS(), path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(body), "/api/stream?fleet=rental") {
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded ui: %v", err)
+	}
+	if !found {
+		t.Fatal("embedded JS missing /api/stream?fleet=rental")
+	}
+}
