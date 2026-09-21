@@ -11,6 +11,25 @@ import (
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
 )
 
+type recordingSink struct {
+	mu  sync.Mutex
+	got []ingest.Telemetry
+}
+
+func (r *recordingSink) Apply(t ingest.Telemetry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, t)
+}
+
+func (r *recordingSink) applied() []ingest.Telemetry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ingest.Telemetry, len(r.got))
+	copy(out, r.got)
+	return out
+}
+
 type fakeSub struct {
 	mu         sync.Mutex
 	handler    ingest.MessageHandler
@@ -56,7 +75,7 @@ func TestRun(t *testing.T) {
 		{
 			name:    "happy path",
 			topic:   "fleet/FPULSESAO00000001/telemetry",
-			payload: []byte(`{"vin":"FPULSESAO00000001","lat":-23.55,"lng":-46.63}`),
+			payload: []byte(`{"vin":"FPULSESAO00000001","lat":-23.55,"lng":-46.63,"plate":"BAL0A01","model":"Fiat Argo","battery":22,"speed":18,"heading":0,"ignition":false,"locked":true,"odometer":4200,"trip":0.4,"displayId":"V01"}`),
 			wantContains: []string{
 				`"msg":"telemetry"`,
 				`"vin":"FPULSESAO00000001"`,
@@ -90,11 +109,17 @@ func TestRun(t *testing.T) {
 			var buf bytes.Buffer
 			log := slog.New(slog.NewJSONHandler(&buf, nil))
 			sub := newFakeSub()
+			sink := &recordingSink{}
 
 			ctx, cancel := context.WithCancel(t.Context())
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- ingest.Run(ctx, sub, log)
+				errCh <- ingest.Run(
+					ctx,
+					sub,
+					sink,
+					log,
+				)
 			}()
 
 			select {
@@ -126,6 +151,35 @@ func TestRun(t *testing.T) {
 				if strings.Contains(got, absent) {
 					t.Fatalf("log unexpectedly contains %q in %s", absent, got)
 				}
+			}
+
+			applied := sink.applied()
+			if tt.wantLevel == "INFO" {
+				if len(applied) != 1 {
+					t.Fatalf("applied = %d, want 1", len(applied))
+				}
+				want := ingest.Telemetry{
+					VIN:       "FPULSESAO00000001",
+					Lat:       -23.55,
+					Lng:       -46.63,
+					Plate:     "BAL0A01",
+					Model:     "Fiat Argo",
+					Battery:   22,
+					Speed:     18,
+					Heading:   0,
+					Ignition:  false,
+					Locked:    true,
+					Odometer:  4200,
+					Trip:      0.4,
+					DisplayID: "V01",
+				}
+				if applied[0] != want {
+					t.Fatalf("applied = %+v, want %+v", applied[0], want)
+				}
+				return
+			}
+			if len(applied) != 0 {
+				t.Fatalf("applied = %+v, want none on skip", applied)
 			}
 		})
 	}
