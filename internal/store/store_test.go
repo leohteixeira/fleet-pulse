@@ -64,13 +64,15 @@ func TestMemory_SeedSnapshotAndApply(t *testing.T) {
 		mem.Seed(rosterFromSim(fleet))
 		vin := fleet[0].VIN
 		seededID := fleet[0].DisplayID
-		mem.Apply(store.Vehicle{
+		if _, crossed := mem.Apply(store.Vehicle{
 			VIN:   vin,
 			Lat:   -23.54,
 			Lng:   -46.62,
 			Plate: "BAL0A01",
 			Model: "Fiat Argo",
-		})
+		}); crossed {
+			t.Fatal("inside update reported an area exit")
+		}
 
 		got := vehicleByVIN(mem.Snapshot(), vin)
 		if got.Lat != -23.54 || got.Lng != -46.62 {
@@ -78,6 +80,56 @@ func TestMemory_SeedSnapshotAndApply(t *testing.T) {
 		}
 		if got.DisplayID != seededID {
 			t.Fatalf("displayId = %q, want seeded %q", got.DisplayID, seededID)
+		}
+	})
+}
+
+func TestMemory_AreaExit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("inside to west of centro emits exit", func(t *testing.T) {
+		t.Parallel()
+
+		mem := store.New()
+		mem.Seed([]store.Vehicle{{
+			VIN:       "FPULSESAO00000002",
+			DisplayID: "V02",
+			Lat:       -23.55,
+			Lng:       -46.63,
+		}})
+		exit, crossed := mem.Apply(store.Vehicle{
+			VIN:       "FPULSESAO00000002",
+			DisplayID: "V02",
+			Lat:       -23.55,
+			Lng:       -46.686,
+		})
+		if !crossed {
+			t.Fatal("inside→outside Apply did not report a crossing")
+		}
+		if exit.VIN != "FPULSESAO00000002" || exit.Lng != -46.686 || exit.DisplayID != "V02" {
+			t.Fatalf("exit = %+v, want vin V02 west of Centro", exit)
+		}
+	})
+
+	t.Run("already outside is not an exit", func(t *testing.T) {
+		t.Parallel()
+
+		mem := store.New()
+		_, first := mem.Apply(store.Vehicle{
+			VIN: "FPULSESAO00000003",
+			Lat: -23.55,
+			Lng: -46.70,
+		})
+		if first {
+			t.Fatal("first point already outside reported an exit")
+		}
+		_, again := mem.Apply(store.Vehicle{
+			VIN: "FPULSESAO00000003",
+			Lat: -23.55,
+			Lng: -46.71,
+		})
+		if again {
+			t.Fatal("still-outside Apply reported an exit")
 		}
 	})
 }

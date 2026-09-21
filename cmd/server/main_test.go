@@ -85,3 +85,72 @@ func TestTelemetrySink_Apply(t *testing.T) {
 		t.Fatal("expected telemetry event")
 	}
 }
+
+func TestTelemetrySink_AreaExit(t *testing.T) {
+	t.Parallel()
+
+	mem := store.New()
+	mem.Seed([]store.Vehicle{{
+		VIN:       "FPULSESAO00000002",
+		DisplayID: "V02",
+		Lat:       -23.55,
+		Lng:       -46.63,
+	}})
+	hub := httpapi.NewHub()
+	events, unsubscribe := hub.Subscribe()
+	t.Cleanup(unsubscribe)
+
+	telemetrySink{mem: mem, hub: hub}.Apply(ingest.Telemetry{
+		VIN:       "FPULSESAO00000002",
+		DisplayID: "V02",
+		Lat:       -23.55,
+		Lng:       -46.686,
+	})
+
+	gotTel := false
+	gotExit := false
+	for range 2 {
+		select {
+		case ev := <-events:
+			switch ev.Name {
+			case "telemetry":
+				gotTel = true
+			case "area-exit":
+				gotExit = true
+				var body struct {
+					VIN       string  `json:"vin"`
+					DisplayID string  `json:"displayId"`
+					Lat       float64 `json:"lat"`
+					Lng       float64 `json:"lng"`
+				}
+				if err := json.Unmarshal(ev.Data, &body); err != nil {
+					t.Fatalf("decode area-exit: %v", err)
+				}
+				if body.VIN != "FPULSESAO00000002" || body.DisplayID != "V02" || body.Lng != -46.686 {
+					t.Fatalf("area-exit = %+v", body)
+				}
+			default:
+				t.Fatalf("unexpected event %q", ev.Name)
+			}
+		default:
+			t.Fatal("expected telemetry and area-exit events")
+		}
+	}
+	if !gotTel || !gotExit {
+		t.Fatalf("telemetry=%v area-exit=%v, want both", gotTel, gotExit)
+	}
+
+	telemetrySink{mem: mem, hub: hub}.Apply(ingest.Telemetry{
+		VIN: "FPULSESAO00000003",
+		Lat: -23.55,
+		Lng: -46.70,
+	})
+	select {
+	case ev := <-events:
+		if ev.Name == "area-exit" {
+			t.Fatal("first point already outside emitted area-exit")
+		}
+	default:
+		t.Fatal("expected telemetry for the already-outside VIN")
+	}
+}

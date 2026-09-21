@@ -190,7 +190,7 @@ func TestHandler_Unlock(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 		},
 		{
-			name: "in-flight conflict",
+			name: "queue full conflict",
 			vin:  vin,
 			key:  "other",
 			unlocker: &fakeUnlocker{err: &command.ConflictError{
@@ -325,6 +325,87 @@ func (a *ackPublisher) Publish(_ context.Context, _ string, payload []byte) erro
 	return nil
 }
 
+func TestHandler_LockAndQueue(t *testing.T) {
+	t.Parallel()
+
+	mem := store.New()
+	mem.Seed([]store.Vehicle{{VIN: "FPULSESAO00000001", DisplayID: "V01"}})
+	pub := &holdPublisher{}
+	svc := command.New(pub, mem, nil)
+	h := httpapi.New(mem, httpapi.NewHub(), svc).Handler()
+
+	lockReq := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/lock", nil)
+	lockReq.Header.Set("Idempotency-Key", "lock-1")
+	lockRec := httptest.NewRecorder()
+	h.ServeHTTP(lockRec, lockReq)
+	if lockRec.Code != http.StatusAccepted {
+		t.Fatalf("lock status = %d, want 202 body=%s", lockRec.Code, lockRec.Body.Bytes())
+	}
+	var lockBody struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(lockRec.Body.Bytes(), &lockBody); err != nil {
+		t.Fatalf("decode lock: %v", err)
+	}
+	if lockBody.State != command.StateSent {
+		t.Fatalf("lock state = %q, want SENT", lockBody.State)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/commands/"+lockBody.ID, nil)
+	getRec := httptest.NewRecorder()
+	h.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get lock status = %d, want 200", getRec.Code)
+	}
+	var stored command.Record
+	if err := json.Unmarshal(getRec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("decode stored lock: %v", err)
+	}
+	if stored.Action != command.ActionLock {
+		t.Fatalf("stored action = %q, want %q", stored.Action, command.ActionLock)
+	}
+
+	unlockReq := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/unlock", nil)
+	unlockReq.Header.Set("Idempotency-Key", "unlock-1")
+	unlockRec := httptest.NewRecorder()
+	h.ServeHTTP(unlockRec, unlockReq)
+	if unlockRec.Code != http.StatusAccepted {
+		t.Fatalf("queued unlock status = %d, want 202", unlockRec.Code)
+	}
+	var queued struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(unlockRec.Body.Bytes(), &queued); err != nil {
+		t.Fatalf("decode queued: %v", err)
+	}
+	if queued.State != command.StatePending {
+		t.Fatalf("queued state = %q, want PENDING", queued.State)
+	}
+
+	third := httptest.NewRequest(http.MethodPost, "/api/vehicles/FPULSESAO00000001/lock", nil)
+	third.Header.Set("Idempotency-Key", "lock-2")
+	thirdRec := httptest.NewRecorder()
+	h.ServeHTTP(thirdRec, third)
+	if thirdRec.Code != http.StatusConflict {
+		t.Fatalf("third status = %d, want 409", thirdRec.Code)
+	}
+	var conflict struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(thirdRec.Body.Bytes(), &conflict); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if conflict.ID != lockBody.ID {
+		t.Fatalf("conflict id = %q, want in-flight %q", conflict.ID, lockBody.ID)
+	}
+}
+
+type holdPublisher struct{}
+
+func (holdPublisher) Publish(context.Context, string, []byte) error { return nil }
+
 func TestHandler_GetCommand(t *testing.T) {
 	t.Parallel()
 
@@ -412,6 +493,12 @@ type fakeUnlocker struct {
 }
 
 func (f *fakeUnlocker) Unlock(_ context.Context, vin, key string) (command.Record, error) {
+	f.vin = vin
+	f.key = key
+	return f.rec, f.err
+}
+
+func (f *fakeUnlocker) Lock(_ context.Context, vin, key string) (command.Record, error) {
 	f.vin = vin
 	f.key = key
 	return f.rec, f.err

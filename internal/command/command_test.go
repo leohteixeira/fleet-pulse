@@ -51,7 +51,7 @@ func TestService_UnlockPublishAndAck(t *testing.T) {
 	}
 
 	logs := buf.String()
-	for _, want := range []string{`"msg":"unlock accepted"`, `"msg":"command published"`, `"msg":"command ack"`} {
+	for _, want := range []string{`"msg":"command accepted"`, `"msg":"command published"`, `"msg":"command ack"`} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("log missing %s in %s", want, logs)
 		}
@@ -149,31 +149,217 @@ func TestService_RefuseAck(t *testing.T) {
 	}
 }
 
-func TestService_Conflict(t *testing.T) {
+func TestService_Lock(t *testing.T) {
 	t.Parallel()
 
-	svc := newTestService(t, &fakePublisher{}, vehicles{"FPULSESAO00000001": {}}, nil)
-	first, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "one")
+	pub := &fakePublisher{}
+	svc := newTestService(t, pub, vehicles{"FPULSESAO00000001": {}}, nil)
+
+	rec, err := svc.Lock(t.Context(), "FPULSESAO00000001", "lock-1")
 	if err != nil {
-		t.Fatalf("first Unlock() error = %v", err)
+		t.Fatalf("Lock() error = %v", err)
+	}
+	if rec.Action != ActionLock || rec.State != StateSent {
+		t.Fatalf("record = %+v, want action lock and state SENT", rec)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(pub.lastPayload(), &payload); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if payload["action"] != ActionLock || payload["id"] != rec.ID {
+		t.Fatalf("payload = %s, want lock id", pub.lastPayload())
 	}
 
-	_, err = svc.Unlock(t.Context(), "FPULSESAO00000001", "two")
+	svc.Apply(rec.ID, true)
+	got, ok := svc.Get(rec.ID)
+	if !ok || got.State != StateAcked {
+		t.Fatalf("after ack = %+v ok=%v, want ACKED", got, ok)
+	}
+}
+
+func TestService_QueueAndThirdConflict(t *testing.T) {
+	t.Parallel()
+
+	pub := &fakePublisher{}
+	svc := newTestService(t, pub, vehicles{"FPULSESAO00000001": {}}, nil)
+
+	first, err := svc.Lock(t.Context(), "FPULSESAO00000001", "one")
+	if err != nil {
+		t.Fatalf("Lock() error = %v", err)
+	}
+	if first.State != StateSent {
+		t.Fatalf("first state = %q, want SENT", first.State)
+	}
+
+	queued, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "two")
+	if err != nil {
+		t.Fatalf("queued Unlock() error = %v, want 202 PENDING", err)
+	}
+	if queued.State != StatePending || queued.Action != ActionUnlock {
+		t.Fatalf("queued = %+v, want PENDING unlock", queued)
+	}
+	if pub.calls() != 1 {
+		t.Fatalf("publishes = %d, want 1 (successor stays unpublished)", pub.calls())
+	}
+
+	replay, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "two")
+	if err != nil {
+		t.Fatalf("replay queued Unlock() error = %v", err)
+	}
+	if replay.ID != queued.ID {
+		t.Fatalf("replay id = %q, want queued %q", replay.ID, queued.ID)
+	}
+
+	_, err = svc.Unlock(t.Context(), "FPULSESAO00000001", "three")
 	var conflict *ConflictError
 	if !errors.As(err, &conflict) {
-		t.Fatalf("second Unlock() error = %v, want ConflictError", err)
+		t.Fatalf("third command error = %v, want ConflictError", err)
 	}
 	if conflict.Current.ID != first.ID {
 		t.Fatalf("conflict id = %q, want in-flight %q", conflict.Current.ID, first.ID)
 	}
 
 	svc.Apply(first.ID, true)
+	got, ok := svc.Get(queued.ID)
+	if !ok || got.State != StateSent {
+		t.Fatalf("successor after terminal = %+v ok=%v, want SENT", got, ok)
+	}
+	if pub.calls() != 2 {
+		t.Fatalf("publishes = %d, want 2 after predecessor terminals", pub.calls())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(pub.lastPayload(), &payload); err != nil {
+		t.Fatalf("successor payload json: %v", err)
+	}
+	if payload["id"] != queued.ID || payload["action"] != ActionUnlock {
+		t.Fatalf("successor payload = %s, want queued unlock", pub.lastPayload())
+	}
+}
+
+func TestService_ReplayPerAction(t *testing.T) {
+	t.Parallel()
+
+	pub := &fakePublisher{}
+	svc := newTestService(t, pub, vehicles{"FPULSESAO00000001": {}}, nil)
+
+	unlock, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "same")
+	if err != nil {
+		t.Fatalf("Unlock() error = %v", err)
+	}
+	lock, err := svc.Lock(t.Context(), "FPULSESAO00000001", "same")
+	if err != nil {
+		t.Fatalf("Lock() error = %v, want queued successor", err)
+	}
+	if lock.ID == unlock.ID {
+		t.Fatal("same key reused across actions")
+	}
+	if lock.State != StatePending {
+		t.Fatalf("lock state = %q, want PENDING", lock.State)
+	}
+
+	replayUnlock, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "same")
+	if err != nil {
+		t.Fatalf("replay Unlock() error = %v", err)
+	}
+	if replayUnlock.ID != unlock.ID {
+		t.Fatalf("replay unlock id = %q, want %q", replayUnlock.ID, unlock.ID)
+	}
+	replayLock, err := svc.Lock(t.Context(), "FPULSESAO00000001", "same")
+	if err != nil {
+		t.Fatalf("replay Lock() error = %v", err)
+	}
+	if replayLock.ID != lock.ID {
+		t.Fatalf("replay lock id = %q, want %q", replayLock.ID, lock.ID)
+	}
+	if pub.calls() != 1 {
+		t.Fatalf("publishes = %d, want 1 until successor is promoted", pub.calls())
+	}
+}
+
+func TestService_QueuePromotesOnRefuse(t *testing.T) {
+	t.Parallel()
+
+	pub := &fakePublisher{}
+	svc := newTestService(t, pub, vehicles{"FPULSESAO00000001": {}}, nil)
+
+	first, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "one")
+	if err != nil {
+		t.Fatalf("Unlock() error = %v", err)
+	}
+	queued, err := svc.Lock(t.Context(), "FPULSESAO00000001", "two")
+	if err != nil {
+		t.Fatalf("Lock() error = %v", err)
+	}
+	if pub.calls() != 1 {
+		t.Fatalf("publishes = %d, want 1 before refuse", pub.calls())
+	}
+
+	svc.Apply(first.ID, false)
+	got, ok := svc.Get(first.ID)
+	if !ok || got.State != StateFailed {
+		t.Fatalf("predecessor = %+v ok=%v, want FAILED", got, ok)
+	}
+	promoted, ok := svc.Get(queued.ID)
+	if !ok || promoted.State != StateSent {
+		t.Fatalf("successor = %+v ok=%v, want SENT", promoted, ok)
+	}
+	if pub.calls() != 2 {
+		t.Fatalf("publishes = %d, want 2 after refuse promotion", pub.calls())
+	}
+}
+
+func TestService_QueuePromotesOnTimeout(t *testing.T) {
+	t.Parallel()
+
+	clock := &stubClock{now: time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)}
+	pub := &fakePublisher{}
+	svc := newTestService(t, pub, vehicles{"FPULSESAO00000020": {}}, nil)
+	svc.clock = clock
+
+	first, err := svc.Unlock(t.Context(), "FPULSESAO00000020", "offline")
+	if err != nil {
+		t.Fatalf("Unlock() error = %v", err)
+	}
+	queued, err := svc.Lock(t.Context(), "FPULSESAO00000020", "next")
+	if err != nil {
+		t.Fatalf("Lock() error = %v", err)
+	}
+
+	clock.now = clock.now.Add(Expiry)
+	svc.Expire()
+	got, _ := svc.Get(first.ID)
+	if got.State != StateTimeout {
+		t.Fatalf("first state = %q, want TIMEOUT", got.State)
+	}
+	promoted, _ := svc.Get(queued.ID)
+	if promoted.State != StateSent {
+		t.Fatalf("successor state = %q, want SENT", promoted.State)
+	}
+	if pub.calls() != 2 {
+		t.Fatalf("publishes = %d, want 2 after timeout promotion", pub.calls())
+	}
+}
+
+func TestService_NewCommandAfterTerminal(t *testing.T) {
+	t.Parallel()
+
+	svc := newTestService(t, &fakePublisher{}, vehicles{"FPULSESAO00000001": {}}, nil)
+	first, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "one")
+	if err != nil {
+		t.Fatalf("Unlock() error = %v", err)
+	}
+	svc.Apply(first.ID, true)
+
 	second, err := svc.Unlock(t.Context(), "FPULSESAO00000001", "two")
 	if err != nil {
 		t.Fatalf("Unlock after terminal error = %v", err)
 	}
 	if second.ID == first.ID {
 		t.Fatal("new key after terminal reused the old id")
+	}
+	if second.State != StateSent {
+		t.Fatalf("state = %q, want SENT", second.State)
 	}
 }
 
@@ -266,9 +452,16 @@ func TestService_RunExpiry(t *testing.T) {
 	}()
 
 	clock.advance(Expiry)
-	time.Sleep(expiryTick)
-
-	got, ok := svc.Get(rec.ID)
+	deadline := time.Now().Add(time.Second)
+	var got Record
+	var ok bool
+	for time.Now().Before(deadline) {
+		got, ok = svc.Get(rec.ID)
+		if ok && got.State == StateTimeout {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if !ok || got.State != StateTimeout {
 		t.Fatalf("after RunExpiry tick = %+v ok=%v, want TIMEOUT", got, ok)
 	}

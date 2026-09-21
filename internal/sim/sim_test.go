@@ -195,6 +195,7 @@ func TestRunVehicle_AcksOverMQTT(t *testing.T) {
 	}
 
 	vehicle := NewFleet()[0]
+	vehicle.refuse = func() bool { return false }
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
@@ -241,6 +242,7 @@ func TestRunVehicle_SubscribesAndAcks(t *testing.T) {
 	}
 
 	vehicle := NewFleet()[0]
+	vehicle.refuse = func() bool { return false }
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
@@ -261,6 +263,166 @@ func TestRunVehicle_SubscribesAndAcks(t *testing.T) {
 		t.Fatalf("runFleet() error = %v", err)
 	}
 }
+
+func TestAckCommand_Refuse(t *testing.T) {
+	t.Parallel()
+
+	vehicle := NewFleet()[0]
+	vehicle.refuse = func() bool { return true }
+	wasLocked := vehicle.Locked
+	var (
+		mu       sync.Mutex
+		acks     []bool
+		topics   []string
+		telCount int
+	)
+	pub := publisherFunc(func(_ context.Context, topic string, payload []byte) error {
+		if strings.HasSuffix(topic, "/telemetry") {
+			mu.Lock()
+			telCount++
+			mu.Unlock()
+			return nil
+		}
+		if !strings.HasSuffix(topic, "/ack") {
+			return nil
+		}
+		var body struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			t.Errorf("ack json: %v", err)
+		}
+		mu.Lock()
+		acks = append(acks, body.OK)
+		topics = append(topics, topic)
+		mu.Unlock()
+		return nil
+	})
+
+	if err := ackCommand(t.Context(), &vehicle, []byte(`{"id":"cmd-refuse","action":"lock"}`), pub); err != nil {
+		t.Fatalf("ackCommand() error = %v", err)
+	}
+	if len(acks) != 1 || acks[0] {
+		t.Fatalf("acks = %v, want one refused ack", acks)
+	}
+	if topics[0] != AckTopic(vehicle.VIN) {
+		t.Fatalf("topic = %q, want %q", topics[0], AckTopic(vehicle.VIN))
+	}
+	if vehicle.Locked != wasLocked {
+		t.Fatalf("Locked = %v, want unchanged %v", vehicle.Locked, wasLocked)
+	}
+	if telCount != 0 {
+		t.Fatalf("telemetry publishes = %d, want 0 on refuse", telCount)
+	}
+}
+
+func TestAckCommand_SuccessFlipsLock(t *testing.T) {
+	t.Parallel()
+
+	vehicle := NewFleet()[0]
+	vehicle.Locked = true
+	vehicle.refuse = func() bool { return false }
+	var (
+		mu       sync.Mutex
+		acks     []bool
+		telCount int
+	)
+	pub := publisherFunc(func(_ context.Context, topic string, payload []byte) error {
+		if strings.HasSuffix(topic, "/telemetry") {
+			mu.Lock()
+			telCount++
+			mu.Unlock()
+			return errors.New("telemetry down")
+		}
+		if !strings.HasSuffix(topic, "/ack") {
+			return nil
+		}
+		var body struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			t.Errorf("ack json: %v", err)
+		}
+		mu.Lock()
+		acks = append(acks, body.OK)
+		mu.Unlock()
+		return nil
+	})
+
+	if err := ackCommand(t.Context(), &vehicle, []byte(`{"id":"cmd-ok","action":"unlock"}`), pub); err != nil {
+		t.Fatalf("ackCommand() error = %v", err)
+	}
+	if vehicle.Locked {
+		t.Fatal("Locked stayed true, want unlocked after successful unlock ack")
+	}
+	if telCount != 1 {
+		t.Fatalf("telemetry publishes = %d, want 1 on success", telCount)
+	}
+	if len(acks) != 1 || !acks[0] {
+		t.Fatalf("acks = %v, want one ok ack even if telemetry failed", acks)
+	}
+}
+
+func TestPublishLoop_WanderCrossesCentro(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var wander Vehicle
+		for _, v := range NewFleet() {
+			if v.VIN == WanderVIN {
+				wander = v
+				break
+			}
+		}
+		if wander.VIN == "" {
+			t.Fatal("wander vin missing from fleet")
+		}
+		if wander.Lng <= storeWest {
+			t.Fatalf("spawn lng = %v, want east of Centro west edge", wander.Lng)
+		}
+
+		var (
+			mu   sync.Mutex
+			lngs []float64
+		)
+		pub := publisherFunc(func(_ context.Context, _ string, payload []byte) error {
+			var point struct {
+				Lng float64 `json:"lng"`
+			}
+			if err := json.Unmarshal(payload, &point); err != nil {
+				t.Errorf("payload: %v", err)
+				return err
+			}
+			mu.Lock()
+			lngs = append(lngs, point.Lng)
+			mu.Unlock()
+			return nil
+		})
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			done <- publishLoop(ctx, wander, PublishInterval, pub, nil)
+		}()
+
+		time.Sleep(12 * time.Second)
+		synctest.Wait()
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("publishLoop() error = %v", err)
+		}
+
+		if len(lngs) < 2 {
+			t.Fatalf("publishes = %d, want several ticks", len(lngs))
+		}
+		if lngs[0] <= storeWest {
+			t.Fatalf("first lng = %v, want inside Centro", lngs[0])
+		}
+		if lngs[len(lngs)-1] >= storeWest {
+			t.Fatalf("last lng = %v, want west of %v", lngs[len(lngs)-1], storeWest)
+		}
+	})
+}
+
+const storeWest = -46.685
 
 type stubClient struct{}
 
