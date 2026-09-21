@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;background:#0B0E13;color:#E6EAF0;font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#3B82F6;text-decoration:none}a:hover{color:#6FA3F8;text-decoration:underline}
+pre{margin:0}
+@keyframes fp-ring{0%{box-shadow:0 0 0 0 rgba(59,130,246,.6)}100%{box-shadow:0 0 0 10px rgba(59,130,246,0)}}
+@keyframes fp-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes fp-ok{0%{background:rgba(52,211,153,.35)}100%{background:rgba(52,211,153,0)}}
+@keyframes fp-spin{to{transform:rotate(360deg)}}
+.fp-pending{animation:fp-ring 1.2s ease-out infinite}.fp-live{animation:fp-pulse 1.6s infinite}.fp-flash-ok{animation:fp-ok 1.6s ease-out infinite}.fp-spin{animation:fp-spin .8s linear infinite}
+</style>
+</helmet>
+<div style="max-width:1120px;margin:0 auto;padding:40px 32px 80px;font-size:13px;line-height:1.5;color:#E6EAF0">
+  <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #232A36;padding-bottom:16px">
+    <span style="font-weight:600;letter-spacing:.08em;font-size:12px">FLEET PULSE · SPEC</span>
+    <span style="color:#5B6472;font-family:'IBM Plex Mono',monospace;font-size:11px">tokens · estados · marcador</span>
+    <a href="Fleet Pulse.dc.html" style="margin-left:auto;font-size:11px;letter-spacing:.04em">← CONSOLE</a>
+  </div>
+
+  <p style="color:#8B95A5;max-width:720px;margin:20px 0 0">Tema escuro único. Uma cor de acento (azul) reservada para ação e seleção; verde, âmbar e vermelho são semânticos e nunca decorativos. "Em uso" é neutro-claro de propósito: é o estado mais comum em movimento e não pode competir com alertas. Raio máximo 2px, sem sombras além do marcador.</p>
+
+  <h2 style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#5B6472;margin:40px 0 12px;font-weight:600">01 · Tokens (CSS vars)</h2>
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start">
+    <pre style="background:#11151C;border:1px solid #232A36;border-radius:2px;padding:16px;font:12px/1.65 'IBM Plex Mono',monospace;color:#C7CFDB;overflow:auto">:root {
+  /* superfícies */
+  --bg-0: #0B0E13;   /* página, mapa */
+  --bg-1: #11151C;   /* header, painel, feed */
+  --bg-2: #181D26;   /* botão secundário, hover de linha */
+  --line: #232A36;   /* divisores fortes */
+  --line-soft: #1A2029;
+
+  /* texto */
+  --text-1: #E6EAF0;
+  --text-2: #8B95A5;
+  --text-3: #5B6472;
+
+  /* ação e seleção */
+  --accent: #3B82F6;
+  --accent-hover: #2F6FDD;
+  --accent-soft: rgba(59,130,246,.08);
+
+  /* semânticos */
+  --ok:   #34D399;
+  --warn: #F59E0B;
+  --err:  #EF4444;
+
+  /* estados de veículo */
+  --v-available: var(--ok);
+  --v-in-use:    #C7CFDB;
+  --v-offline:   #2A313D;   /* texto: --text-2, borda tracejada --text-3 */
+  --v-outside:   var(--warn);
+
+  /* tipografia */
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px;
+  --fs-16: 16px; --fs-20: 20px; --fs-22: 22px;
+
+  /* espaçamento e forma */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px;
+  --sp-4: 16px; --sp-5: 24px;
+  --radius: 2px;
+
+  /* layout */
+  --header-h: 44px;
+  --panel-w: 360px;
+  --feed-h: 172px; --feed-collapsed-h: 28px;
+}</pre>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        <sc-for list="{{ swatches }}" as="s" hint-placeholder-count="12">
+          <div style="border:1px solid #232A36;border-radius:2px;overflow:hidden;background:#11151C">
+            <div style="height:44px;background:{{ s.hex }}"></div>
+            <div style="padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#8B95A5;line-height:1.4"><div style="color:#E6EAF0">{{ s.name }}</div>{{ s.hex }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="border:1px solid #232A36;border-radius:2px;background:#11151C;padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:20px;font-weight:600;font-family:'IBM Plex Mono',monospace">BRA2E19</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5B6472">mono 20/600 · placa, KPIs, valores</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:13px;font-weight:500">Rótulo de painel</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5B6472">sans 13/500 · corpo, botões</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8B95A5">Eyebrow</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5B6472">sans 11/400 caps +6% · cabeçalhos de campo</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8B95A5;font-variant-numeric:tabular-nums">há 12s · -23.55050, -46.63330</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5B6472">mono 11 tabular · tempo, coordenadas</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2 style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#5B6472;margin:40px 0 12px;font-weight:600">02 · Marcador (Leaflet divIcon)</h2>
+  <div style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:start">
+    <div style="border:1px solid #232A36;border-radius:2px;background:#11151C;padding:24px;display:flex;flex-direction:column;gap:24px">
+      <div style="display:flex;align-items:flex-end;gap:40px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:14px">
+          <div style="transform:scale(3);transform-origin:bottom center;margin-top:90px;position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;width:44px;height:44px"><svg width="14" height="24" viewBox="0 0 12 22" style="display:block;transform:rotate(40deg);transform-origin:50% 50%;filter:drop-shadow(0 1px 1px rgba(0,0,0,.8))"><path d="M6 .5C9 .5 10.5 1.6 10.8 3.6L11.3 8V19C11.3 20.9 9.8 21.5 6 21.5C2.2 21.5 .7 20.9 .7 19V8L1.2 3.6C1.5 1.6 3 .5 6 .5Z" fill="#C7CFDB" stroke="rgba(0,0,0,.6)" stroke-width="1"></path><path d="M2.2 6.2h7.6L9 10H3z M2.6 15.5h6.8v2.5H2.6z" fill="rgba(11,14,19,.55)"></path></svg><span style="font:600 10px/1 'IBM Plex Mono',monospace;letter-spacing:.02em;color:#C7CFDB;background:rgba(11,14,19,.9);padding:2px 4px;border-radius:2px;border:1px solid rgba(255,255,255,.1)">V07</span></div>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#5B6472">3×</span>
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#8B95A5;line-height:1.8">
+          <div><span style="color:#E6EAF0">44 × 44px</span> · carro 14×24 em cima, etiqueta embaixo</div>
+          <div><span style="color:#E6EAF0">carro</span> 1 path SVG inline (vista de topo) + 1 path de vidros</div>
+          <div><span style="color:#E6EAF0">fill</span> = cor do estado; stroke rgba(0,0,0,.6) 1px; drop-shadow 0 1 1</div>
+          <div><span style="color:#E6EAF0">rumo</span> rotate(heading) no próprio carro, origem no centro</div>
+          <div><span style="color:#E6EAF0">etiqueta</span> mono 10/600, texto na cor do estado sobre rgba(11,14,19,.9)</div>
+          <div><span style="color:#E6EAF0">anchor</span> [22,12] = centro do carro · iconSize [44,44]</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap;padding-top:20px;border-top:1px solid #1A2029">
+        <sc-for list="{{ markers }}" as="m" hint-placeholder-count="5">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:10px;min-width:96px">
+            <div style="position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;width:44px;height:44px;opacity:{{ m.op }}">
+              <sc-if value="{{ m.sel }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;left:50%;top:12px;width:32px;height:32px;margin:-16px 0 0 -16px;border:2px solid #3B82F6;border-radius:50%;box-shadow:0 0 0 3px rgba(59,130,246,.25),0 0 12px rgba(59,130,246,.5)"></span></sc-if>
+              <svg width="14" height="24" viewBox="0 0 12 22" style="display:block;transform:rotate({{ m.rot }}deg);transform-origin:50% 50%;filter:drop-shadow(0 1px 1px rgba(0,0,0,.8))"><path d="M6 .5C9 .5 10.5 1.6 10.8 3.6L11.3 8V19C11.3 20.9 9.8 21.5 6 21.5C2.2 21.5 .7 20.9 .7 19V8L1.2 3.6C1.5 1.6 3 .5 6 .5Z" fill="{{ m.bg }}" stroke="{{ m.stroke }}" stroke-width="1" stroke-dasharray="{{ m.dash }}"></path><path d="M2.2 6.2h7.6L9 10H3z M2.6 15.5h6.8v2.5H2.6z" fill="{{ m.win }}"></path></svg>
+              <span style="font:600 10px/1 'IBM Plex Mono',monospace;letter-spacing:.02em;color:{{ m.fg }};background:{{ m.chipBg }};padding:2px 4px;border-radius:2px;border:1px solid {{ m.chipBorder }}">{{ m.id }}</span>
+            </div>
+            <span style="font-size:11px;color:#8B95A5;text-align:center">{{ m.label }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="border:1px solid #232A36;border-radius:2px;background:#11151C;padding:16px;font-size:12.5px;color:#8B95A5;display:flex;flex-direction:column;gap:10px">
+      <div><span style="color:#E6EAF0;font-weight:500">Silhueta, não pino.</span> Um único path de carro visto de cima (~200 bytes) dentro do divIcon: ainda é HTML/CSS simples, e o carro girando no rumo diz "está andando" sem seta extra. A etiqueta separada, sobre fundo escuro, mantém o id legível em qualquer ângulo e sobre qualquer tile.</div>
+      <div><span style="color:#E6EAF0;font-weight:500">Selecionado.</span> anel 2px --accent de 32px ao redor do carro com halo suave; etiqueta vira fundo --accent com texto branco. zIndexOffset 1000. O acento nunca preenche o carro — a cor do carro é sempre estado.</div>
+      <div><span style="color:#E6EAF0;font-weight:500">Offline.</span> carro --v-offline com stroke tracejado --text-3, vidros apagados, etiqueta --text-2, opacity .85. Recua visualmente.</div>
+      <div><span style="color:#E6EAF0;font-weight:500">Rumo.</span> o carro sempre aponta o heading, parado ou em movimento (um carro estacionado também tem orientação). Ícone só é recriado quando o rumo muda ≥10°.</div>
+      <div><span style="color:#E6EAF0;font-weight:500">Movimento.</span> setLatLng a cada tick; setIcon só quando estado/seleção/rumo (arredondado a 10°) muda. Sem transição CSS de posição.</div>
+    </div>
+  </div>
+
+  <h2 style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#5B6472;margin:40px 0 12px;font-weight:600">03 · Estados de comando</h2>
+  <div style="border:1px solid #232A36;border-radius:2px;background:#11151C">
+    <div style="display:grid;grid-template-columns:110px 1fr 200px 1fr;gap:16px;padding:8px 16px;border-bottom:1px solid #232A36;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:#5B6472">
+      <span>Estado</span><span>Botão primário</span><span>Linha de status</span><span>Comportamento</span>
+    </div>
+    <sc-for list="{{ cmds }}" as="c" hint-placeholder-count="6">
+      <div style="display:grid;grid-template-columns:110px 1fr 200px 1fr;gap:16px;padding:12px 16px;border-bottom:1px solid #1A2029;align-items:center;font-size:12.5px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#E6EAF0">{{ c.name }}</span>
+        <div style="display:flex;gap:8px;max-width:300px">
+          <div class="{{ c.btnCls }}" style="flex:1;height:32px;border-radius:2px;border:1px solid #3B82F6;background:{{ c.btnBg }};color:#fff;font-weight:600;font-size:12.5px;display:flex;align-items:center;justify-content:center;gap:8px;opacity:{{ c.op }}">
+            <sc-if value="{{ c.spin }}" hint-placeholder-val="{{ false }}"><span class="fp-spin" style="width:10px;height:10px;border-radius:50%;border:1.5px solid rgba(255,255,255,.35);border-top-color:#fff"></span></sc-if>{{ c.btn }}
+          </div>
+          <div style="flex:1;height:32px;border-radius:2px;border:1px solid #2F3846;background:#181D26;color:#E6EAF0;font-size:12.5px;display:flex;align-items:center;justify-content:center;opacity:{{ c.op }}">Travar</div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border:1px solid {{ c.border }};background:{{ c.bg }};border-radius:2px;font-size:11px;font-family:'IBM Plex Mono',monospace">
+          <span style="color:#8B95A5">COMANDO</span>
+          <span style="display:flex;align-items:center;gap:6px;color:{{ c.color }}"><span class="{{ c.dotCls }}" style="width:6px;height:6px;border-radius:50%;background:{{ c.color }}"></span>{{ c.label }}</span>
+        </div>
+        <span style="color:#8B95A5;font-size:12px">{{ c.note }}</span>
+      </div>
+    </sc-for>
+  </div>
+  <p style="color:#8B95A5;max-width:760px;margin:12px 0 0;font-size:12.5px"><span style="color:#E6EAF0;font-weight:500">Pendente → confirmado, o momento da demo.</span> Três coisas mudam ao mesmo tempo e nada mais: o anel azul pulsante para, a linha COMANDO troca azul por verde, e a linha "Portas" recebe um flash verde de 1,6s ao virar TRAVADAS/DESTRAVADAS. Um evento entra no topo do feed com slide de 4px. Sem toast, sem modal, sem confete.</p>
+
+  <h2 style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#5B6472;margin:40px 0 12px;font-weight:600">04 · Estados de veículo, conexão e painel vazio</h2>
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start">
+    <div style="border:1px solid #232A36;border-radius:2px;background:#11151C">
+      <sc-for list="{{ vstates }}" as="s" hint-placeholder-count="4">
+        <div style="display:grid;grid-template-columns:130px 1fr;gap:16px;padding:12px 16px;border-bottom:1px solid #1A2029;align-items:center">
+          <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:2px;font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;background:{{ s.bg }};color:{{ s.color }};border:1px solid {{ s.color }};justify-self:start"><span style="width:6px;height:6px;border-radius:50%;background:{{ s.color }}"></span>{{ s.label }}</span>
+          <span style="color:#8B95A5;font-size:12px">{{ s.note }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div style="border:1px solid #232A36;border-radius:2px;background:#11151C;padding:14px 16px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid #232A36;border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8B95A5"><span class="fp-live" style="width:7px;height:7px;border-radius:50%;background:#34D399"></span>STREAM · AO VIVO <span style="color:#5B6472">14:02:31</span></div>
+          <span style="color:#8B95A5;font-size:12px">Ponto verde pulsa 1,6s; relógio avança a cada tick.</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid rgba(245,158,11,.5);background:rgba(245,158,11,.1);border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#F59E0B"><span class="fp-spin" style="width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(245,158,11,.3);border-top-color:#F59E0B"></span>STREAM CAIU · RECONECTANDO (3/8)</div>
+        </div>
+        <div style="color:#8B95A5;font-size:12px">Queda: pill âmbar com contador de tentativas, faixa tracejada âmbar de 2px no topo do mapa, aviso "Posições congeladas · último dado há Ns". Marcadores param de mover, comandos ficam em espera. Nada fica vermelho: reconectar é atenção, não falha.</div>
+      </div>
+      <div style="border:1px solid #232A36;border-radius:2px;background:#11151C;padding:24px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;color:#5B6472">
+        <div style="width:36px;height:36px;border:1px dashed #3A4353;border-radius:2px;position:relative"><span style="position:absolute;left:50%;top:6px;bottom:6px;width:1px;background:#3A4353"></span><span style="position:absolute;top:50%;left:6px;right:6px;height:1px;background:#3A4353"></span></div>
+        <div style="font-size:12.5px;color:#8B95A5">Nenhum veículo selecionado</div>
+        <div style="font-size:11.5px;max-width:220px;line-height:1.5">Clique em um marcador no mapa para ver telemetria e enviar comandos.</div>
+        <div style="font-size:11px;color:#5B6472;margin-top:8px;font-family:'IBM Plex Mono',monospace">painel vazio · mira tracejada, sem ilustração</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals(){
+    const swatches=[["--bg-0","#0B0E13"],["--bg-1","#11151C"],["--bg-2","#181D26"],["--line","#232A36"],["--text-1","#E6EAF0"],["--text-2","#8B95A5"],["--text-3","#5B6472"],["--accent","#3B82F6"],["--ok","#34D399"],["--warn","#F59E0B"],["--err","#EF4444"],["--v-in-use","#C7CFDB"]].map(([name,hex])=>({name,hex}));
+    const mk=(id,label,bg,rot,o={})=>({id,label,bg,rot,fg:o.sel?"#fff":(o.fg||bg),stroke:o.stroke||"rgba(0,0,0,.6)",dash:o.dash||"0",win:o.win||"rgba(11,14,19,.55)",op:o.op||1,sel:!!o.sel,chipBg:o.sel?"#3B82F6":"rgba(11,14,19,.9)",chipBorder:o.sel?"#3B82F6":"rgba(255,255,255,.1)"});
+    const markers=[mk("V03","Disponível","#34D399",0),mk("V07","Em uso · rumo 300°","#C7CFDB",300),mk("V19","Fora da área","#F59E0B",120),mk("V12","Offline","#2A313D",20,{fg:"#8B95A5",stroke:"#5B6472",dash:"2 1.5",win:"rgba(91,100,114,.5)",op:.85}),mk("V07","Selecionado","#C7CFDB",300,{sel:true})];
+    const A="#3B82F6",OK="#34D399",ERR="#EF4444",W="#F59E0B",T3="#5B6472";
+    const cmds=[
+      {name:"ocioso",btn:"Destravar",btnBg:A,op:1,spin:false,btnCls:"",label:"OCIOSO",color:T3,border:"#232A36",bg:"transparent",dotCls:"",note:"Estado de repouso. Nenhum comando na fila para este veículo."},
+      {name:"pendente",btn:"Enviando…",btnBg:"#2A5DB8",op:.6,spin:true,btnCls:"fp-pending",label:"PENDENTE",color:A,border:"rgba(59,130,246,.5)",bg:"rgba(59,130,246,.08)",dotCls:"fp-live",note:"Clique → ~0,9s. Botões desabilitados, anel azul pulsa a 1,2s, spinner no primário."},
+      {name:"enviado",btn:"Aguardando…",btnBg:"#2A5DB8",op:.6,spin:true,btnCls:"",label:"ENVIADO · aguardando ACK",color:A,border:"rgba(59,130,246,.5)",bg:"rgba(59,130,246,.08)",dotCls:"fp-live",note:"Servidor aceitou, aguardando o carro. Anel para; ponto azul continua pulsando. Evento 'Comando enviado' no feed."},
+      {name:"confirmado",btn:"Destravar",btnBg:A,op:1,spin:false,btnCls:"",label:"CONFIRMADO",color:OK,border:"rgba(52,211,153,.5)",bg:"rgba(52,211,153,.08)",dotCls:"",note:"Linha vira verde, campo Portas atualiza com flash verde 1,6s. Botões voltam. Permanece até o próximo comando ou troca de veículo."},
+      {name:"falhou",btn:"Destravar",btnBg:A,op:1,spin:false,btnCls:"",label:"FALHOU",color:ERR,border:"rgba(239,68,68,.5)",bg:"rgba(239,68,68,.08)",dotCls:"",note:"Único uso do vermelho no painel. Flash vermelho no campo Portas; motivo curto no feed. Botões voltam para retry."},
+      {name:"expirou",btn:"Destravar",btnBg:A,op:1,spin:false,btnCls:"",label:"EXPIROU",color:W,border:"rgba(245,158,11,.5)",bg:"rgba(245,158,11,.08)",dotCls:"",note:"Sem resposta em 15s (6s na demo). Âmbar: não sabemos o estado real das portas. Botões voltam."}
+    ];
+    const vstates=[
+      {label:"Disponível",color:OK,bg:"rgba(52,211,153,.12)",note:"Parado, travado, ignição desligada. Marcador verde sem seta. Estado 'bom' da frota."},
+      {label:"Em uso",color:"#C7CFDB",bg:"rgba(199,207,219,.08)",note:"Em movimento com seta de rumo. Neutro-claro: é a maioria dos marcadores móveis, não pode parecer alerta."},
+      {label:"Fora da área",color:W,bg:"rgba(245,158,11,.12)",note:"Saiu do polígono tracejado. Âmbar com seta. Gera evento e conta no header e no rodapé do feed."},
+      {label:"Offline",color:T3,bg:"rgba(91,100,114,.12)",note:"Sem sinal > 60s. Marcador escuro tracejado; 'Último sinal' em vermelho no painel; velocidade vira '—'. Comandos tendem a expirar."}
+    ];
+    return {swatches,markers,cmds,vstates};
+  }
+}
+</script>
+</body>
+</html>
