@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"time"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
@@ -87,10 +86,6 @@ func (b *Broker) Start(ctx context.Context) error {
 
 	b.srv = srv
 	b.addr = tcp.Address()
-	if err := waitReady(ctx, b.DialAddr()); err != nil {
-		_ = b.Close()
-		return err
-	}
 	return nil
 }
 
@@ -185,31 +180,4 @@ func (b *Broker) Close() error {
 		}
 	})
 	return b.closeErr
-}
-
-func waitReady(ctx context.Context, addr string) error {
-	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	var d net.Dialer
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	var last error
-	for {
-		conn, err := d.DialContext(readyCtx, "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		last = err
-		select {
-		case <-readyCtx.Done():
-			if last != nil {
-				return fmt.Errorf("broker not accepting connections: %w", last)
-			}
-			return fmt.Errorf("broker not accepting connections: %w", readyCtx.Err())
-		case <-ticker.C:
-		}
-	}
 }
