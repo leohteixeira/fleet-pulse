@@ -57,6 +57,20 @@ func (h *Hub) Publish(ev Event) {
 	}
 }
 
+// Drain closes every subscriber so SSE handlers return before HTTP shutdown.
+func (h *Hub) Drain() {
+	h.mu.Lock()
+	clients := make([]*client, 0, len(h.clients))
+	for c := range h.clients {
+		clients = append(clients, c)
+		delete(h.clients, c)
+	}
+	h.mu.Unlock()
+	for _, c := range clients {
+		c.close()
+	}
+}
+
 func (h *Hub) unsubscribe(c *client) {
 	h.mu.Lock()
 	delete(h.clients, c)

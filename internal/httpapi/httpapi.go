@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
+	"github.com/leohteixeira/fleet-pulse/internal/webui"
 )
 
 // ListenAddr is the process bind address for the HTTP API.
@@ -41,6 +44,7 @@ type Server struct {
 	store    Store
 	hub      HubPort
 	unlocker Unlocker
+	files    fs.FS
 }
 
 // New wires consumer-owned store, hub, and command ports.
@@ -48,10 +52,10 @@ func New(store Store, hub HubPort, unlocker Unlocker) *Server {
 	if hub == nil {
 		hub = NewHub()
 	}
-	return &Server{store: store, hub: hub, unlocker: unlocker}
+	return &Server{store: store, hub: hub, unlocker: unlocker, files: webui.FS()}
 }
 
-// Handler registers snapshot, lock, unlock, command lookup, stream, and health routes.
+// Handler registers snapshot, lock, unlock, command lookup, stream, health, and the SPA.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/vehicles", s.vehicles)
@@ -60,6 +64,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/commands/{id}", s.command)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("GET /{$}", s.spa)
+	mux.HandleFunc("GET /{path...}", s.spa)
 	return mux
 }
 
@@ -109,6 +115,40 @@ func (s *Server) vehicles(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+	files := s.files
+	if files == nil {
+		http.NotFound(w, r)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" {
+		path = "index.html"
+	}
+	if f, err := files.Open(path); err == nil {
+		_ = f.Close()
+		info, err := fs.Stat(files, path)
+		if err == nil && !info.IsDir() {
+			http.FileServer(http.FS(files)).ServeHTTP(w, r)
+			return
+		}
+	}
+	body, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		slog.Error("spa fallback", "err", err)
+	}
 }
 
 func (s *Server) unlock(w http.ResponseWriter, r *http.Request) {

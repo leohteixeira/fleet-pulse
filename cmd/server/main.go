@@ -79,18 +79,22 @@ func run(log *slog.Logger) error {
 		return errors.Join(fmt.Errorf("subscribe ingest: %w", err), b.Close())
 	}
 
+	httpCtx, stopHTTP := context.WithCancel(context.Background())
+	simCtx, stopSim := context.WithCancel(context.Background())
 	handler := httpapi.New(mem, hub, cmds).Handler()
+	httpDone := make(chan struct{})
 	wg.Go(func() {
-		if err := httpapi.Listen(ctx, httpapi.ListenAddr, handler); err != nil && !errors.Is(err, context.Canceled) {
+		defer close(httpDone)
+		if err := httpapi.Listen(httpCtx, httpapi.ListenAddr, handler); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("http: %w", err)
 		}
 	})
 	wg.Go(func() {
-		cmds.RunExpiry(ctx)
+		cmds.RunExpiry(simCtx)
 	})
 
 	wg.Go(func() {
-		if err := sim.Run(ctx, b.DialAddr()); err != nil && !errors.Is(err, context.Canceled) {
+		if err := sim.Run(simCtx, b.DialAddr()); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("simulator: %w", err)
 		}
 	})
@@ -103,18 +107,56 @@ func run(log *slog.Logger) error {
 		stop()
 	}
 
-	wg.Wait()
+	shutErr := orderlyShutdown(shutdownHooks{
+		drain:    hub.Drain,
+		stopHTTP: stopHTTP,
+		httpDone: httpDone,
+		stopSim:  stopSim,
+		wait:     wg.Wait,
+		closeBro: b.Close,
+	})
 	for {
 		select {
 		case err := <-errCh:
 			runErr = errors.Join(runErr, err)
 		default:
-			if err := b.Close(); err != nil {
-				return errors.Join(runErr, fmt.Errorf("close broker: %w", err))
-			}
-			return runErr
+			return errors.Join(runErr, shutErr)
 		}
 	}
+}
+
+type shutdownHooks struct {
+	drain    func()
+	stopHTTP func()
+	httpDone <-chan struct{}
+	stopSim  func()
+	wait     func()
+	closeBro func() error
+}
+
+func orderlyShutdown(h shutdownHooks) error {
+	if h.drain != nil {
+		h.drain()
+	}
+	if h.stopHTTP != nil {
+		h.stopHTTP()
+	}
+	if h.httpDone != nil {
+		<-h.httpDone
+	}
+	if h.stopSim != nil {
+		h.stopSim()
+	}
+	if h.wait != nil {
+		h.wait()
+	}
+	if h.closeBro == nil {
+		return nil
+	}
+	if err := h.closeBro(); err != nil {
+		return fmt.Errorf("close broker: %w", err)
+	}
+	return nil
 }
 
 type readySub struct {
