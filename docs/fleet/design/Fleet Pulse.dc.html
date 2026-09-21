@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--bg-0:#0B0E13;--bg-1:#11151C;--bg-2:#181D26;--bg-3:#1F2632;--line:#232A36;--line-soft:#1A2029;--line-strong:#3A4353;--text-1:#E6EAF0;--text-2:#8B95A5;--text-3:#5B6472;--accent:#3B82F6;--accent-hover:#2F6FDD;--accent-dim:#2A5DB8;--ok:#34D399;--warn:#F59E0B;--err:#EF4444;--v-in-use:#C7CFDB;--v-offline:#2A313D;--overlay:rgba(17,21,28,.92);--chip:rgba(11,14,19,.9);--chip-border:rgba(255,255,255,.1);--glass:rgba(11,14,19,.55)}
+:root[data-theme="light"]{--bg-0:#E9ECF0;--bg-1:#FFFFFF;--bg-2:#F3F5F8;--bg-3:#E8EBF0;--line:#D5DAE2;--line-soft:#E9ECF1;--line-strong:#B8C0CC;--text-1:#141820;--text-2:#5B6472;--text-3:#6B7585;--accent:#2563EB;--accent-hover:#1D4ED8;--accent-dim:#6D9BF0;--ok:#059669;--warn:#B45309;--err:#DC2626;--v-in-use:#3F4A5C;--v-offline:#C9CFD8;--overlay:rgba(255,255,255,.92);--chip:rgba(255,255,255,.94);--chip-border:rgba(0,0,0,.14);--glass:rgba(255,255,255,.6)}
+html,body{margin:0;height:100%;background:var(--bg-0);color:var(--text-1);font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{color:#6FA3F8;text-decoration:underline}
+button{font-family:inherit;cursor:pointer}
+.leaflet-div-icon{background:transparent;border:0}
+.leaflet-container{background:var(--bg-0);font-family:inherit}
+.leaflet-control-attribution{background:var(--overlay)!important;color:var(--text-3)!important;font-size:10px!important}
+.leaflet-control-attribution a{color:var(--text-2)!important}
+.leaflet-bar a{background:var(--bg-1)!important;color:var(--text-1)!important;border-color:var(--line)!important}
+.fp-mk{position:relative;display:flex;align-items:center;justify-content:center;width:34px;height:20px;font:600 10.5px/1 "IBM Plex Mono",monospace;letter-spacing:.02em;border-radius:2px;border:1px solid rgba(0,0,0,.55);box-shadow:0 1px 2px rgba(0,0,0,.6);box-sizing:border-box;transition:transform .15s}
+.fp-mk.sel{outline:2px solid var(--accent);outline-offset:2px;transform:scale(1.12);z-index:10}
+.fp-mk .hd{position:absolute;left:50%;top:50%;width:0;height:0;margin:-4px 0 0 -4px;border:4px solid transparent;border-bottom:7px solid currentColor;transform-origin:50% 100%}
+@keyframes fp-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes fp-ring{0%{box-shadow:0 0 0 0 rgba(59,130,246,.6)}100%{box-shadow:0 0 0 10px rgba(59,130,246,0)}}
+@keyframes fp-ok{0%{background:rgba(52,211,153,.35)}100%{background:rgba(52,211,153,0)}}
+@keyframes fp-err{0%{background:rgba(239,68,68,.35)}100%{background:rgba(239,68,68,0)}}
+@keyframes fp-spin{to{transform:rotate(360deg)}}
+@keyframes fp-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.fp-flash-ok{animation:fp-ok 1.6s ease-out forwards}
+.fp-flash-err{animation:fp-err 1.6s ease-out forwards}
+.fp-row-in{animation:fp-in .25s ease-out}
+.fp-live{animation:fp-pulse 1.6s ease-in-out infinite}
+.fp-spin{animation:fp-spin .8s linear infinite}
+.fp-pending{animation:fp-ring 1.2s ease-out infinite}
+</style>
+</helmet>
+<div data-screen-label="Console" style="display:grid;grid-template-rows:44px minmax(0,1fr) auto;height:100vh;min-height:640px;background:var(--bg-0);color:var(--text-1);font-size:13px">
+  <header style="display:flex;align-items:center;gap:0;border-bottom:1px solid var(--line);background:var(--bg-1);padding:0 16px;min-width:0;overflow:hidden;white-space:nowrap">
+    <div style="display:flex;align-items:center;gap:10px;padding-right:20px;border-right:1px solid var(--line);height:100%">
+      <span style="width:8px;height:8px;background:var(--accent);border-radius:1px"></span>
+      <span style="font-weight:600;letter-spacing:.08em;font-size:12px">FLEET PULSE</span>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">SP · zona centro</span>
+    </div>
+    <div style="display:flex;align-items:stretch;height:100%;min-width:0;overflow:hidden;flex-shrink:1">
+      <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="5">
+        <div style="display:flex;align-items:center;gap:8px;padding:0 12px;border-right:1px solid var(--line)">
+          <span style="width:6px;height:6px;border-radius:1px;background:{{ k.color }}"></span>
+          <span style="color:var(--text-2);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em">{{ k.label }}</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-1);min-width:2ch;text-align:right">{{ k.value }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:16px">
+      <a href="Fleet Pulse Spec.dc.html" style="font-size:11px;color:var(--text-3);letter-spacing:.04em">SPEC →</a>
+      <div style="position:relative;display:flex;padding:2px;gap:2px;border:1px solid var(--line);border-radius:2px;background:var(--bg-2)">
+        <span style="position:absolute;top:2px;bottom:2px;width:26px;left:{{ knobLeft }};background:var(--text-1);border-radius:2px;transition:left .18s ease"></span>
+        <button onClick="{{ setLight }}" title="Tema claro" style="position:relative;width:26px;height:22px;border:0;background:none;padding:0;display:flex;align-items:center;justify-content:center;color:{{ lightFg }}">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="2.6"></circle><path d="M7 1v1.6M7 11.4V13M1 7h1.6M11.4 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M2.8 11.2l1.1-1.1M10.1 3.9l1.1-1.1"></path></svg>
+        </button>
+        <button onClick="{{ setDark }}" title="Tema escuro" style="position:relative;width:26px;height:22px;border:0;background:none;padding:0;display:flex;align-items:center;justify-content:center;color:{{ darkFg }}">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M11.5 8.6A5 5 0 0 1 5.4 2.5a5 5 0 1 0 6.1 6.1z"></path></svg>
+        </button>
+      </div>
+      <sc-if value="{{ online }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid var(--line);border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-2)">
+          <span class="fp-live" style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></span>
+          <span>STREAM · AO VIVO</span>
+          <span style="color:var(--text-3)">{{ clock }}</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{ reconnecting }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid rgba(245,158,11,.5);background:rgba(245,158,11,.1);border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--warn)">
+          <span class="fp-spin" style="width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(245,158,11,.3);border-top-color:var(--warn)"></span>
+          <span>STREAM CAIU · RECONECTANDO {{ retryLabel }}</span>
+        </div>
+      </sc-if>
+    </div>
+  </header>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) 360px;min-height:0;min-width:0">
+    <div style="position:relative;min-height:0">
+      <div ref="{{ mapRef }}" style="position:absolute;inset:0"></div>
+      <sc-if value="{{ reconnecting }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;left:0;right:0;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--warn) 0 12px,transparent 12px 20px);z-index:500"></div>
+        <div style="position:absolute;left:12px;top:12px;z-index:500;padding:6px 10px;background:var(--overlay);border:1px solid rgba(245,158,11,.5);border-radius:2px;font-size:11.5px;color:var(--warn)">Posições congeladas · último dado {{ staleLabel }}</div>
+      </sc-if>
+      <div style="position:absolute;left:12px;bottom:12px;z-index:500;display:flex;gap:12px;padding:6px 10px;background:var(--overlay);border:1px solid var(--line);border-radius:2px;font-size:11px;color:var(--text-2)">
+        <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--ok);border-radius:1px"></span>Disponível</span>
+        <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--v-in-use);border-radius:1px"></span>Em uso</span>
+        <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--warn);border-radius:1px"></span>Fora da área</span>
+        <span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;background:var(--v-offline);border:1px dashed var(--text-3);border-radius:1px;box-sizing:border-box"></span>Offline</span>
+        <span style="display:flex;align-items:center;gap:6px;color:var(--text-3)">carro aponta o rumo</span>
+        <span style="display:flex;align-items:center;gap:6px;color:var(--text-3)"><span style="width:14px;border-top:1px dashed var(--text-3)"></span>Área permitida</span>
+      </div>
+    </div>
+
+    <aside style="border-left:1px solid var(--line);background:var(--bg-1);display:flex;flex-direction:column;min-height:0;overflow:auto">
+      <sc-if value="{{ noSelection }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--text-3)">
+          <div style="width:36px;height:36px;border:1px dashed var(--line-strong);border-radius:2px;position:relative">
+            <span style="position:absolute;left:50%;top:6px;bottom:6px;width:1px;background:var(--line-strong)"></span>
+            <span style="position:absolute;top:50%;left:6px;right:6px;height:1px;background:var(--line-strong)"></span>
+          </div>
+          <div style="font-size:12.5px;color:var(--text-2)">Nenhum veículo selecionado</div>
+          <div style="font-size:11.5px;max-width:220px;line-height:1.5">Clique em um marcador no mapa para ver telemetria e enviar comandos.</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ hasSelection }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:14px 16px 12px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:600;letter-spacing:.02em">{{ v.plate }}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3)">#{{ v.id }}</span>
+            </div>
+            <div style="color:var(--text-2);font-size:12px;margin-top:2px">{{ v.model }}</div>
+          </div>
+          <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:2px;font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;background:{{ v.stateBg }};color:{{ v.stateColor }};border:1px solid {{ v.stateColor }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ v.stateColor }}"></span>{{ v.stateLabel }}</span>
+          <button onClick="{{ deselect }}" style="background:none;border:0;color:var(--text-3);font-size:16px;line-height:1;padding:0 0 0 4px" title="Fechar">×</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)">
+          <div style="padding:12px 16px;border-right:1px solid var(--line)">
+            <div style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Bateria</div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px"><span style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;color:{{ v.battColor }}">{{ v.battery }}</span><span style="color:var(--text-2);font-size:12px">%</span></div>
+            <div style="height:3px;background:var(--line);margin-top:8px;border-radius:1px"><div style="height:100%;width:{{ v.batteryPct }};background:{{ v.battColor }};border-radius:1px"></div></div>
+          </div>
+          <div style="padding:12px 16px">
+            <div style="font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em">Velocidade</div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px"><span style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums">{{ v.speed }}</span><span style="color:var(--text-2);font-size:12px">km/h</span></div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:8px">rumo {{ v.headingLabel }}</div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:auto 1fr;row-gap:0;border-bottom:1px solid var(--line);font-size:12.5px">
+          <div style="padding:8px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Ignição</div>
+          <div style="padding:8px 16px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px"><span style="width:6px;height:6px;border-radius:50%;background:{{ v.ignColor }}"></span>{{ v.ignitionLabel }}</div>
+          <div style="padding:8px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Portas</div>
+          <div class="{{ lockRowClass }}" style="padding:8px 16px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px"><span style="width:6px;height:6px;border-radius:50%;background:{{ v.lockColor }}"></span>{{ v.lockLabel }}</div>
+          <div style="padding:8px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Quilometragem</div>
+          <div style="padding:8px 16px;border-bottom:1px solid var(--line-soft);display:flex;align-items:baseline;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-variant-numeric:tabular-nums"><span>{{ v.odometerLabel }}</span><span style="color:var(--text-3);font-size:11px">{{ v.tripLabel }}</span></div>
+          <div style="padding:8px 16px;color:var(--text-2);border-bottom:1px solid var(--line-soft)">Último sinal</div>
+          <div style="padding:8px 16px;border-bottom:1px solid var(--line-soft);font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ v.seenColor }}">{{ v.lastSeenLabel }}</div>
+          <div style="padding:8px 16px;color:var(--text-2)">Posição</div>
+          <div style="padding:8px 16px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text-2)">{{ v.coords }}</div>
+        </div>
+
+        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:8px">
+            <button onClick="{{ unlock }}" disabled="{{ cmdBusy }}" class="{{ unlockClass }}" style="flex:1;height:36px;border-radius:2px;border:1px solid var(--accent);background:{{ unlockBg }};color:#fff;font-weight:600;font-size:13px;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:8px;opacity:{{ btnOpacity }}" style-hover="background:var(--accent-hover)">
+              <sc-if value="{{ cmdBusy }}" hint-placeholder-val="{{ false }}"><span class="fp-spin" style="width:10px;height:10px;border-radius:50%;border:1.5px solid rgba(255,255,255,.35);border-top-color:#fff"></span></sc-if>
+              {{ unlockLabel }}
+            </button>
+            <button onClick="{{ lock }}" disabled="{{ cmdBusy }}" style="flex:1;height:36px;border-radius:2px;border:1px solid var(--line-strong);background:var(--bg-2);color:var(--text-1);font-weight:500;font-size:13px;opacity:{{ btnOpacity }}" style-hover="background:var(--bg-3);border-color:var(--line-strong)">Travar</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border:1px solid {{ cmdBorder }};background:{{ cmdBg }};border-radius:2px;font-size:11.5px;font-family:'IBM Plex Mono',monospace">
+            <span style="color:var(--text-2)">COMANDO</span>
+            <span style="display:flex;align-items:center;gap:6px;color:{{ cmdColor }}"><span class="{{ cmdDotClass }}" style="width:6px;height:6px;border-radius:50%;background:{{ cmdColor }}"></span>{{ cmdLabel }}</span>
+          </div>
+        </div>
+      </sc-if>
+    </aside>
+  </div>
+
+  <footer style="border-top:1px solid var(--line);background:var(--bg-1);display:flex;flex-direction:column;height:{{ feedHeight }};transition:height .2s">
+    <button onClick="{{ toggleFeed }}" style="display:flex;align-items:center;gap:10px;height:28px;padding:0 16px;background:none;border:0;border-bottom:1px solid var(--line-soft);color:var(--text-2);font-size:11px;letter-spacing:.06em;text-transform:uppercase;text-align:left">
+      <span style="font-family:'IBM Plex Mono',monospace;color:var(--text-3)">{{ feedChevron }}</span>
+      <span>Eventos</span>
+      <span style="font-family:'IBM Plex Mono',monospace;color:var(--text-3);text-transform:none;letter-spacing:0">{{ eventCount }} registros</span>
+      <span style="margin-left:auto;display:flex;gap:14px;font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:0;color:var(--text-3)">
+        <span><span style="color:var(--err)">{{ failCount }}</span> falhas</span>
+        <span><span style="color:var(--warn)">{{ geoCount }}</span> fora da área</span>
+      </span>
+    </button>
+    <sc-if value="{{ feedOpen }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto;min-height:0">
+        <sc-for list="{{ events }}" as="e" hint-placeholder-count="4">
+          <div class="{{ e.rowClass }}" style="display:grid;grid-template-columns:64px 72px 150px 1fr;gap:12px;align-items:center;padding:0 16px;height:26px;border-bottom:1px solid var(--line-soft);font-size:12px" style-hover="background:var(--bg-2)">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums">{{ e.when }}</span>
+            <button onClick="{{ e.select }}" style="background:none;border:0;padding:0;text-align:left;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--v-in-use)" style-hover="color:var(--accent)">{{ e.vehicle }}</button>
+            <span style="display:flex;align-items:center;gap:6px;color:{{ e.color }};font-size:11px;font-weight:500;letter-spacing:.03em;text-transform:uppercase"><span style="width:6px;height:6px;border-radius:1px;background:{{ e.color }}"></span>{{ e.type }}</span>
+            <span style="color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.desc }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;carShape&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;hatch&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;hatch&quot;,&quot;sedan&quot;,&quot;suv&quot;,&quot;pickup&quot;,&quot;dot&quot;],&quot;section&quot;:&quot;Marcador&quot;},&quot;showHeading&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Marcador&quot;},&quot;connection&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;auto&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;auto&quot;,&quot;online&quot;,&quot;reconnecting&quot;],&quot;section&quot;:&quot;Simulação&quot;},&quot;commandOutcome&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;auto&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;auto&quot;,&quot;confirmado&quot;,&quot;falhou&quot;,&quot;expirou&quot;],&quot;section&quot;:&quot;Simulação&quot;}}">
+const MODELS=["Fiat Argo","VW Polo","Chevrolet Onix","Hyundai HB20","Renault Kwid","Fiat Mobi","Toyota Corolla","VW Nivus","Jeep Renegade","Peugeot 208"];
+const AREA={s:-23.585,n:-23.525,w:-46.685,e:-46.60};
+const CENTER=[-23.555,-46.643];
+const COL={ok:"var(--ok)",warn:"var(--warn)",err:"var(--err)",accent:"var(--accent)",use:"var(--v-in-use)",off:"var(--v-offline)",offText:"var(--text-2)",t2:"var(--text-2)",t3:"var(--text-3)",line:"var(--line)"};
+const STATE={disponivel:{label:"Disponível",color:COL.ok},em_uso:{label:"Em uso",color:COL.use},offline:{label:"Offline",color:COL.t3},fora:{label:"Fora da área",color:COL.warn}};
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const plate=()=>pick("BCDFGHJKLMNPQRSTVWXZ".split(""))+pick("AEIOU".split(""))+pick("BCDFGHJKLMNPRSTVXZ".split(""))+Math.floor(rnd(0,10))+pick("ABCDEFGHJ".split(""))+Math.floor(rnd(10,100));
+const HDG=["N","NE","L","SE","S","SO","O","NO"];
+const fmtCoord=(la,ln)=>la.toFixed(5)+", "+ln.toFixed(5);
+const rel=(ms)=>{const s=Math.max(0,Math.round(ms/1000));if(s<60)return "há "+s+"s";const m=Math.floor(s/60);if(m<60)return "há "+m+"min";return "há "+Math.floor(m/60)+"h"};
+const CARS={
+  hatch:{body:"M6 .5C9 .5 10.5 1.6 10.8 3.6L11.3 8V19C11.3 20.9 9.8 21.5 6 21.5C2.2 21.5 .7 20.9 .7 19V8L1.2 3.6C1.5 1.6 3 .5 6 .5Z",glass:"M2.2 6.2h7.6L9 10H3z M2.6 15.5h6.8v2.5H2.6z"},
+  sedan:{body:"M6 .5C8.6 .5 10 1.3 10.4 3L11.2 7.5V18.5C11.2 20.2 10.3 21.5 6 21.5C1.7 21.5 .8 20.2 .8 18.5V7.5L1.6 3C2 1.3 3.4 .5 6 .5Z",glass:"M2.3 5.8h7.4L9.2 9.2H2.8z M2.8 13.8h6.4L9.6 17H2.4z"},
+  suv:{body:"M6 .5C9.4 .5 11.2 1.4 11.3 3.5V19.5C11.3 20.9 10.2 21.5 6 21.5C1.8 21.5 .7 20.9 .7 19.5V3.5C.8 1.4 2.6 .5 6 .5Z",glass:"M1.8 5.2h8.4L9.6 8.6H2.4z M1.8 16.5h8.4v2.5H1.8z"},
+  pickup:{body:"M6 .5C9.2 .5 10.8 1.4 11 3.3L11.3 7V20C11.3 20.9 10.7 21.5 9.8 21.5H2.2C1.3 21.5 .7 20.9 .7 20V7L1 3.3C1.2 1.4 2.8 .5 6 .5Z",glass:"M2 5.5h8L9.4 8.8H2.6z M2.2 11.5h7.6v8.5H2.2z"},
+  dot:{body:"M6 3.5C9 3.5 11.2 5.5 11.2 9.5V12.5C11.2 16.5 9 18.5 6 18.5C3 18.5 .8 16.5 .8 12.5V9.5C.8 5.5 3 3.5 6 3.5Z",glass:"M6 5.5L8.2 9H3.8z"}
+};
+const EVT={enviado:{label:"Comando enviado",color:COL.t2},confirmado:{label:"Comando confirmado",color:COL.ok},falhou:{label:"Comando falhou",color:COL.err},expirou:{label:"Comando expirou",color:COL.warn},fora:{label:"Saiu da área",color:COL.warn},offline:{label:"Ficou offline",color:COL.t3}};
+
+class Component extends DCLogic {
+  constructor(p){super(p);this.mapRef=React.createRef();this.markers={};this.lastIcon={};this.map=null;
+    const now=Date.now();
+    const vehicles=[];
+    for(let i=0;i<25;i++){
+      const r=Math.random();
+      const state=r<.45?"disponivel":r<.8?"em_uso":r<.92?"offline":"fora";
+      let lat=rnd(AREA.s+.006,AREA.n-.006),lng=rnd(AREA.w+.008,AREA.e-.008);
+      if(state==="fora"){lat=Math.random()<.5?AREA.s-rnd(.004,.012):AREA.n+rnd(.004,.012)}
+      vehicles.push({id:"V"+String(i+1).padStart(2,"0"),plate:plate(),model:pick(MODELS),state,lat,lng,heading:rnd(0,360),speed:state==="em_uso"||state==="fora"?Math.round(rnd(18,62)):0,battery:Math.round(rnd(22,98)),odometer:rnd(4200,87000),tripKm:state==="em_uso"||state==="fora"?rnd(.4,18):0,ignition:state==="em_uso"||state==="fora",locked:state!=="em_uso",lastSeen:now-(state==="offline"?rnd(6e5,3.6e6):rnd(0,8e3))});
+    }
+    const events=[];
+    const seed=[["confirmado","Portas destravadas em 1,8s"],["fora","Saiu do polígono Centro pela zona sul"],["enviado","Destravar portas"],["offline","Sem sinal há 10min"],["expirou","Sem resposta em 15s"],["confirmado","Portas travadas em 2,1s"],["falhou","Ignição ligada, comando recusado"]];
+    seed.forEach((s,i)=>events.push({id:i,t:now-(i+1)*rnd(20e3,90e3),vehicle:pick(vehicles).id,type:s[0],desc:s[1]}));
+    this.eid=100;
+    let theme="dark";try{theme=localStorage.getItem("fleetpulse-theme")||"dark"}catch(e){}
+    this.state={vehicles,events,selectedId:null,cmd:null,feedOpen:true,conn:"online",retry:0,dropAt:now+35e3,staleAt:0,now,theme};
+  }
+  componentDidMount(){this.applyTheme(this.state.theme);this.initMap();this.timer=setInterval(()=>this.tick(),1000)}
+  componentWillUnmount(){clearInterval(this.timer);if(this.map)this.map.remove()}
+  componentDidUpdate(){this.syncMarkers()}
+  applyTheme(t){document.documentElement.setAttribute("data-theme",t);if(this.map)this.setTiles(t)}
+  setTiles(t){const L=window.L;if(this.tiles)this.map.removeLayer(this.tiles);this.tiles=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_"+(t==="light"?"Light":"Dark")+"_Gray_Base/MapServer/tile/{z}/{y}/{x}",{maxZoom:16,attribution:"© Esri, HERE, OpenStreetMap"}).addTo(this.map);this.tiles.bringToBack()}
+  setTheme=(t)=>{try{localStorage.setItem("fleetpulse-theme",t)}catch(e){}this.applyTheme(t);this.setState({theme:t})}
+  initMap(){
+    if(!window.L||!this.mapRef.current){setTimeout(()=>this.initMap(),100);return}
+    const L=window.L;
+    const map=L.map(this.mapRef.current,{center:CENTER,zoom:14,zoomControl:true,attributionControl:true});
+    this.map=map;this.setTiles(this.state.theme);
+    L.rectangle([[AREA.s,AREA.w],[AREA.n,AREA.e]],{color:"var(--text-3)",weight:1,dashArray:"6 6",fill:true,fillColor:"var(--accent)",fillOpacity:.03,interactive:false}).addTo(map);
+    map.on("click",()=>this.setState({selectedId:null,cmd:null}));
+    this.syncMarkers();
+  }
+  iconHtml(v,sel){
+    const s=STATE[v.state];let fill=s.color,stroke="rgba(0,0,0,.6)",dash="",win="var(--glass)",label=s.color,op=1;
+    if(v.state==="offline"){fill=COL.off;stroke="var(--text-3)";dash="2 1.5";win="rgba(91,100,114,.5)";label=COL.offText;op=.85}
+    const rot=(this.props.showHeading??true)?Math.round(v.heading):0;
+    const shape=CARS[this.props.carShape??"hatch"]||CARS.hatch;
+    const car='<svg width="14" height="24" viewBox="0 0 12 22" style="display:block;transform:rotate('+rot+'deg);transform-origin:50% 50%;filter:drop-shadow(0 1px 1px rgba(0,0,0,.8))"><path d="'+shape.body+'" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+'/><path d="'+shape.glass+'" fill="'+win+'"/></svg>';
+    const ring=sel?'<span style="position:absolute;left:50%;top:12px;width:32px;height:32px;margin:-16px 0 0 -16px;border:2px solid var(--accent);border-radius:50%;box-shadow:0 0 0 3px rgba(59,130,246,.25),0 0 12px rgba(59,130,246,.5);pointer-events:none"></span>':"";
+    return '<div style="position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;width:44px;height:44px;opacity:'+op+'">'+ring+car+'<span style="font:600 10px/1 \'IBM Plex Mono\',monospace;letter-spacing:.02em;color:'+(sel?"#fff":label)+';background:'+(sel?"var(--accent)":"var(--chip)")+';padding:2px 4px;border-radius:2px;border:1px solid '+(sel?"var(--accent)":"var(--chip-border)")+'">'+v.id+'</span></div>';
+  }
+  syncMarkers(){
+    if(!this.map)return;const L=window.L;
+    this.state.vehicles.forEach(v=>{
+      const sel=v.id===this.state.selectedId;
+      const key=v.state+"|"+sel+"|"+Math.round(v.heading/10)+"|"+(v.speed>0)+"|"+(this.props.showHeading??true)+"|"+(this.props.carShape??"hatch");
+      let m=this.markers[v.id];
+      const mk=()=>L.divIcon({html:this.iconHtml(v,sel),iconSize:[44,44],iconAnchor:[22,12]});
+      if(!m){m=L.marker([v.lat,v.lng],{icon:mk(),zIndexOffset:sel?1000:0}).addTo(this.map);m.on("click",e=>{L.DomEvent.stopPropagation(e);this.select(v.id)});this.markers[v.id]=m;this.lastIcon[v.id]=key}
+      else{m.setLatLng([v.lat,v.lng]);if(this.lastIcon[v.id]!==key){m.setIcon(mk());m.setZIndexOffset(sel?1000:0);this.lastIcon[v.id]=key}}
+    });
+  }
+  select=(id)=>this.setState({selectedId:id,cmd:null});
+  pushEvent(events,vehicle,type,desc,t){return [{id:this.eid++,t,vehicle,type,desc,fresh:true},...events].slice(0,60)}
+  tick(){
+    const now=Date.now();
+    this.setState(st=>{
+      let {conn,retry,dropAt,staleAt,cmd}=st;let events=st.events;
+      const mode=this.props.connection??"auto";
+      if(mode==="online"){conn="online"}else if(mode==="reconnecting"){if(conn!=="reconnecting"){conn="reconnecting";staleAt=now;retry=0}retry++}
+      else{
+        if(conn==="online"&&now>dropAt){conn="reconnecting";staleAt=now;retry=0}
+        else if(conn==="reconnecting"){retry++;if(retry>7){conn="online";dropAt=now+rnd(40e3,70e3)}}
+      }
+      const live=conn==="online";
+      const vehicles=st.vehicles.map(v=>{
+        if(!live)return v;
+        const n={...v};
+        if(n.odometer==null){n.odometer=rnd(4200,87000);n.tripKm=0}
+        if(n.state==="em_uso"||n.state==="fora"){
+          n.heading=(n.heading+rnd(-14,14)+360)%360;
+          if(Math.random()<.08)n.speed=Math.max(0,Math.min(70,n.speed+Math.round(rnd(-12,12))));
+          const d=n.speed/3600/111*1.2;
+          n.odometer=(n.odometer??rnd(4200,87000))+n.speed/3600*1.2;n.tripKm=(n.tripKm??0)+n.speed/3600*1.2;
+          n.lat+=Math.cos(n.heading*Math.PI/180)*d;n.lng+=Math.sin(n.heading*Math.PI/180)*d/Math.cos(n.lat*Math.PI/180);
+          const inside=n.lat>AREA.s&&n.lat<AREA.n&&n.lng>AREA.w&&n.lng<AREA.e;
+          if(n.state==="em_uso"&&!inside){n.state="fora";events=this.pushEvent(events,n.id,"fora","Saiu do polígono Centro",now)}
+          if(n.state==="fora"&&inside){n.state="em_uso"}
+          if(n.state==="fora"){n.heading=(Math.atan2(CENTER[1]-n.lng,CENTER[0]-n.lat)*180/Math.PI+360+rnd(-30,30))%360}
+          n.lastSeen=now;
+          if(Math.random()<.002)n.battery=Math.max(5,n.battery-1);
+        } else if(n.state==="disponivel"){
+          n.lastSeen=now-rnd(0,6e3);
+          if(Math.random()<.003){n.state="offline";events=this.pushEvent(events,n.id,"offline","Sem sinal, último pacote "+rel(now-n.lastSeen).slice(3),now)}
+          else if(Math.random()<.004){n.state="em_uso";n.ignition=true;n.locked=false;n.speed=Math.round(rnd(15,40));n.tripKm=0;n.lastSeen=now}
+        } else if(n.state==="offline"){
+          if(Math.random()<.004){n.state="disponivel";n.lastSeen=now}
+        }
+        return n;
+      });
+      if(cmd&&cmd.status!=="idle"&&live){
+        const age=now-cmd.t;
+        if(cmd.status==="pendente"&&age>900){cmd={...cmd,status:"enviado"};events=this.pushEvent(events,cmd.vehicleId,"enviado",cmd.action==="unlock"?"Destravar portas":"Travar portas",now)}
+        else if(cmd.status==="enviado"&&age>cmd.dur){
+          const out=cmd.outcome;
+          cmd={...cmd,status:out,doneAt:now};
+          const vi=vehicles.findIndex(x=>x.id===cmd.vehicleId);
+          if(out==="confirmado"&&vi>=0){vehicles[vi]={...vehicles[vi],locked:cmd.action==="lock",lastSeen:now}}
+          events=this.pushEvent(events,cmd.vehicleId,out,out==="confirmado"?(cmd.action==="unlock"?"Portas destravadas":"Portas travadas")+" em "+(cmd.dur/1000).toFixed(1).replace(".",",")+"s":out==="falhou"?"Veículo recusou: ignição ligada":"Sem resposta em 15s",now);
+        }
+      }
+      events=events.map(e=>e.fresh&&now-e.t>600?{...e,fresh:false}:e);
+      return {vehicles,events,conn,retry,dropAt,staleAt,cmd,now};
+    });
+  }
+  sendCmd(action){
+    const v=this.state.vehicles.find(x=>x.id===this.state.selectedId);if(!v)return;
+    const o=this.props.commandOutcome??"auto";
+    let outcome=o;
+    if(o==="auto"){const r=Math.random();outcome=v.state==="offline"?"expirou":r<.8?"confirmado":r<.9?"falhou":"expirou"}
+    const dur=outcome==="expirou"?6000:outcome==="falhou"?rnd(1500,2500):rnd(1400,2600);
+    this.setState({cmd:{vehicleId:v.id,action,status:"pendente",t:Date.now(),dur,outcome}});
+  }
+  renderVals(){
+    const {vehicles,events,selectedId,cmd,feedOpen,conn,retry,staleAt,now}=this.state;
+    const cnt=k=>vehicles.filter(v=>v.state===k).length;
+    const pendingCmds=cmd&&(cmd.status==="pendente"||cmd.status==="enviado")?1:0;
+    const kpis=[{label:"Veículos",value:vehicles.length,color:"var(--text-3)"},{label:"Disponíveis",value:cnt("disponivel"),color:COL.ok},{label:"Em uso",value:cnt("em_uso"),color:COL.use},{label:"Fora",value:cnt("fora"),color:COL.warn},{label:"Offline",value:cnt("offline"),color:COL.t3},{label:"Pendentes",value:pendingCmds,color:COL.accent}];
+    const online=conn==="online";
+    const d=new Date(now);const clock=[d.getHours(),d.getMinutes(),d.getSeconds()].map(x=>String(x).padStart(2,"0")).join(":");
+    const sel=vehicles.find(x=>x.id===selectedId);
+    let v=null;
+    if(sel){const s=STATE[sel.state];const age=now-sel.lastSeen;
+      v={...sel,stateLabel:s.label,stateColor:s.color,stateBg:{em_uso:"rgba(120,130,150,.12)",offline:"rgba(91,100,114,.12)",disponivel:"rgba(52,211,153,.14)",fora:"rgba(245,158,11,.14)"}[sel.state],
+        batteryPct:sel.battery+"%",battColor:sel.battery<20?COL.err:sel.battery<40?COL.warn:COL.ok,speed:sel.state==="offline"?"—":sel.speed,headingLabel:sel.speed>0?HDG[Math.round(sel.heading/45)%8]+" "+Math.round(sel.heading)+"°":"parado",
+        ignitionLabel:sel.ignition?"LIGADA":"DESLIGADA",ignColor:sel.ignition?COL.warn:COL.t3,lockLabel:sel.locked?"TRAVADAS":"DESTRAVADAS",lockColor:sel.locked?COL.ok:COL.warn,
+        odometerLabel:Math.round(sel.odometer??0).toLocaleString("pt-BR")+" km",tripLabel:(sel.tripKm??0)>0?(sel.tripKm).toFixed(1).replace(".",",")+" km nesta viagem":"sem viagem ativa",
+        lastSeenLabel:rel(age),seenColor:age>60e3?COL.err:age>15e3?COL.warn:"var(--text-1)",coords:fmtCoord(sel.lat,sel.lng)};
+    }
+    const busy=!!cmd&&(cmd.status==="pendente"||cmd.status==="enviado");
+    const cs=cmd?cmd.status:"idle";
+    const CMD={idle:["OCIOSO",COL.t3,COL.line,"transparent"],pendente:["PENDENTE",COL.accent,"rgba(59,130,246,.5)","rgba(59,130,246,.08)"],enviado:["ENVIADO · aguardando ACK",COL.accent,"rgba(59,130,246,.5)","rgba(59,130,246,.08)"],confirmado:["CONFIRMADO",COL.ok,"rgba(52,211,153,.5)","rgba(52,211,153,.08)"],falhou:["FALHOU",COL.err,"rgba(239,68,68,.5)","rgba(239,68,68,.08)"],expirou:["EXPIROU",COL.warn,"rgba(245,158,11,.5)","rgba(245,158,11,.08)"]}[cs];
+    const justDone=cmd&&cmd.doneAt&&now-cmd.doneAt<2000;
+    const evs=events.map(e=>({...e,when:rel(now-e.t),type:EVT[e.type].label,color:EVT[e.type].color,rowClass:e.fresh?"fp-row-in":"",select:()=>this.select(e.vehicle)}));
+    const dark=this.state.theme!=="light";
+    return {kpis,online,setDark:()=>this.setTheme("dark"),setLight:()=>this.setTheme("light"),knobLeft:dark?"30px":"2px",darkFg:dark?"var(--bg-1)":"var(--text-3)",lightFg:dark?"var(--text-3)":"var(--bg-1)",reconnecting:!online,clock,retryLabel:"("+retry+"/8)",staleLabel:rel(now-staleAt),mapRef:this.mapRef,
+      noSelection:!sel,hasSelection:!!sel,v,deselect:()=>this.setState({selectedId:null,cmd:null}),
+      unlock:()=>this.sendCmd("unlock"),lock:()=>this.sendCmd("lock"),cmdBusy:busy,btnOpacity:busy?.6:1,unlockBg:busy?"var(--accent-dim)":COL.accent,unlockClass:cs==="pendente"?"fp-pending":"",
+      unlockLabel:cs==="pendente"?"Enviando…":cs==="enviado"?"Aguardando…":"Destravar",
+      cmdLabel:CMD[0],cmdColor:CMD[1],cmdBorder:CMD[2],cmdBg:CMD[3],cmdDotClass:busy?"fp-live":"",
+      lockRowClass:justDone?(cmd.status==="confirmado"?"fp-flash-ok":cmd.status==="falhou"?"fp-flash-err":""):"",
+      feedOpen,feedHeight:feedOpen?"172px":"28px",feedChevron:feedOpen?"▾":"▸",toggleFeed:()=>this.setState(s=>({feedOpen:!s.feedOpen})),
+      events:evs,eventCount:events.length,failCount:events.filter(e=>e.type==="falhou").length,geoCount:events.filter(e=>e.type==="fora").length};
+  }
+}
+</script>
+</body>
+</html>

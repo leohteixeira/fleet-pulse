@@ -1,0 +1,33 @@
+# Git hooks for fleet-pulse.
+#
+# gitleaks is pinned in the Dev Container image, so the hook calls it
+# directly. The pre-push gate matches .github/workflows/ci.yml.
+min_version: 2.1.6
+assert_lefthook_installed: true
+
+pre-push:
+  parallel: false
+  jobs:
+    - name: secrets-history
+      run: gitleaks git --redact --no-banner
+
+    - name: go
+      run: |
+        set -eu
+        go mod tidy
+        git diff --exit-code go.mod go.sum
+        unformatted="$(gofmt -l .)"
+        if [ -n "${unformatted}" ]; then
+          printf '%s\n' "${unformatted}"
+          exit 1
+        fi
+        go vet ./...
+        go build ./...
+        mkdir -p .gotmp
+        GOTMPDIR="$PWD/.gotmp" go test -race -shuffle=on ./...
+
+    - name: web
+      run: |
+        set -eu
+        pnpm --dir web test
+        pnpm --dir web build

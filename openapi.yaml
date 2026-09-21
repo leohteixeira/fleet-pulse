@@ -1,0 +1,177 @@
+openapi: 3.0.3
+info:
+  title: Fleet Pulse
+  version: 0.1.0
+  description: >
+    Single-process fleet simulator. Six HTTP endpoints plus an embedded SPA.
+    No authentication. Fleet state lives in memory.
+servers:
+  - url: http://127.0.0.1:8300
+paths:
+  /api/vehicles:
+    get:
+      summary: Fleet snapshot
+      operationId: getVehicles
+      responses:
+        '200':
+          description: Current vehicles and the allowed Centro polygon
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
+  /api/stream:
+    get:
+      summary: Live telemetry, command, and area-exit events
+      operationId: getStream
+      responses:
+        '200':
+          description: Server-sent events; per-client buffer drops the oldest frame
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /api/vehicles/{vin}/unlock:
+    post:
+      summary: Unlock a vehicle
+      operationId: unlockVehicle
+      parameters:
+        - $ref: '#/components/parameters/Vin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Command accepted or queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+        '400':
+          description: Missing Idempotency-Key
+        '404':
+          description: Unknown VIN
+        '409':
+          description: Queue full; body is the in-flight command
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+  /api/vehicles/{vin}/lock:
+    post:
+      summary: Lock a vehicle
+      operationId: lockVehicle
+      parameters:
+        - $ref: '#/components/parameters/Vin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Command accepted or queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+        '400':
+          description: Missing Idempotency-Key
+        '404':
+          description: Unknown VIN
+        '409':
+          description: Queue full; body is the in-flight command
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+  /api/commands/{id}:
+    get:
+      summary: Command state
+      operationId: getCommand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current command record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+        '404':
+          description: Unknown command
+  /healthz:
+    get:
+      summary: Liveness
+      operationId: healthz
+      responses:
+        '200':
+          description: Process is up
+components:
+  parameters:
+    Vin:
+      name: vin
+      in: path
+      required: true
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+  schemas:
+    Snapshot:
+      type: object
+      required: [polygon, vehicles]
+      properties:
+        polygon:
+          $ref: '#/components/schemas/Polygon'
+        vehicles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vehicle'
+    Polygon:
+      type: object
+      required: [south, north, west, east]
+      properties:
+        south: { type: number }
+        north: { type: number }
+        west: { type: number }
+        east: { type: number }
+    Vehicle:
+      type: object
+      required: [vin, displayId]
+      properties:
+        vin: { type: string }
+        displayId: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        plate: { type: string }
+        model: { type: string }
+        battery: { type: number }
+        speed: { type: number }
+        heading: { type: number }
+        ignition: { type: boolean }
+        locked: { type: boolean }
+        odometer: { type: number }
+        trip: { type: number }
+    CommandAccepted:
+      type: object
+      required: [id, state]
+      properties:
+        id: { type: string }
+        state:
+          $ref: '#/components/schemas/CommandState'
+    Command:
+      type: object
+      properties:
+        id: { type: string }
+        vin: { type: string }
+        action:
+          type: string
+          enum: [unlock, lock]
+        state:
+          $ref: '#/components/schemas/CommandState'
+        correlationId: { type: string }
+    CommandState:
+      type: string
+      enum: [PENDING, SENT, ACKED, FAILED, TIMEOUT]

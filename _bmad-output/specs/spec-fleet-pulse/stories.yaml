@@ -1,0 +1,83 @@
+- id: "1"
+  title: Embedded broker, simulator, and telemetry logs
+  description: >-
+    Stand up the Go module, embedded mochi-mqtt broker, and 15–25 real MQTT
+    clients publishing telemetry every 2 seconds (CAP-7, CAP-1 data path).
+    Success is structured logs showing VINs and positions; no HTTP UI yet.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Load golang-how-to first. Real MQTT clients, not in-process calls.
+    No utils package. Consumer-owned interfaces. One permanently offline
+    vehicle. Bind the broker to 0.0.0.0:1883.
+
+- id: "2"
+  title: In-memory store, snapshot, and SSE
+  description: >-
+    Add the in-memory fleet store, GET /api/vehicles (polygon + display ids),
+    GET /api/stream, and GET /healthz so CAP-1 data and CAP-9 plumbing can
+    be proven with curl. Drop oldest SSE events under pressure; no compression
+    on the stream route.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Store behind an interface declared by the consumer. Snapshot includes
+    the allowed Centro polygon and short display ids; VIN is the API key.
+    SSE drops oldest. Disable compression on /api/stream. Bind HTTP to 0.0.0.0:8300.
+
+- id: "3"
+  title: Live map markers
+  description: >-
+    Render the designed map with live markers driven by snapshot + SSE (CAP-1).
+    Markers must be functionally live before visual polish; derived states
+    include disponível, em uso, fora da área, and offline.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Replicate docs/design marker contract: 44×44 divIcon, rebuild only on
+    state/selection/heading bucket. useReducer by VIN. One EventSource,
+    StrictMode-safe. Esri Canvas World Gray. Portuguese UI. react-leaflet v5
+    or imperative Leaflet fallback.
+
+- id: "4"
+  title: Asynchronous unlock lifecycle
+  description: >-
+    Implement POST /api/vehicles/{vin}/unlock through MQTT to
+    ACKED|FAILED|TIMEOUT (CAP-3, CAP-8). Expiry is 5s from SENT; the same
+    Idempotency-Key replays the existing command; one correlation id from
+    HTTP to the ack log.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    States PENDING/SENT/ACKED/FAILED/TIMEOUT only. Expiry clock starts at SENT.
+    Header Idempotency-Key scoped to vin+action. Respond 202 with a command id.
+    slog JSON correlation from HTTP through MQTT ack.
+
+- id: "5"
+  title: Lock, queue, panel, feed, failures, and geofence
+  description: >-
+    Add lock (CAP-11), the one-deep queue, the vehicle panel (CAP-2), the
+    event feed (CAP-6), injected failures (CAP-4, CAP-5), and Centro geofence
+    (CAP-12). Command UX follows ux.md: Portuguese labels, 5s copy, other
+    action queueable while one command is in-flight.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Lock uses the same machine as unlock. Queue depth one; a third command
+    returns 409. COMANDO line shows the in-flight command only. 10% refuse;
+    one offline vehicle times out. Server owns the polygon and emits area-exit
+    SSE; frontend derives Fora. No toast or modal. Timeout copy says 5 segundos.
+
+- id: "6"
+  title: Theme, degraded stream, embed, and contract docs
+  description: >-
+    Ship the dark/light theme toggle, degraded-stream treatment (CAP-9),
+    go:embed of the UI (CAP-7), openapi.yaml for the six endpoints, and a
+    README with an architecture diagram plus trade-offs (CAP-10).
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Theme uses data-theme=light and localStorage fleetpulse-theme. Degraded
+    stream is amber, never red; commands wait. Embed with index.html fallback.
+    openapi.yaml lists six HTTP endpoints. README names the in-memory trade-off.
+    Graceful shutdown drains SSE clients first.
