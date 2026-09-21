@@ -8,8 +8,12 @@ info:
     Leasing writes require Idempotency-Key. Policy and visitor audit are
     server-owned. Calendar rate is environment-only (CALENDAR_RATE).
     GET /api/stream requires fleet=rental|leasing.
+    MQTT is not published. Position history is out of scope.
 servers:
+  - url: http://127.0.0.1:3300
+    description: Compose Caddy (UI and API, same origin)
   - url: http://127.0.0.1:8300
+    description: Direct app bind (local go run)
 paths:
   /api/clock:
     get:
