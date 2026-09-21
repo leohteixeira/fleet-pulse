@@ -100,7 +100,10 @@ func TestTelemetrySink_Apply(t *testing.T) {
 
 	mem := store.New()
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe("")
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 
 	const vin = "FPULSESAO00000001"
@@ -151,7 +154,10 @@ func TestTelemetrySink_AreaExit(t *testing.T) {
 		Lng:       -46.63,
 	}})
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe("")
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 
 	telemetrySink{mem: mem, hub: hub}.Apply(ingest.Telemetry{

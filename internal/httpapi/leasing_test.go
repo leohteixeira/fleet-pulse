@@ -310,8 +310,12 @@ func TestHandler_NotifyPolicyAndReplay(t *testing.T) {
 		t.Fatalf("replay body %q != first %q", replay.Body.String(), ok.Body.String())
 	}
 
+	bk.details["c-cool"] = book.Detail{
+		Contract:   book.Contract{ID: "c-cool", VIN: "FPULSELSG00000003", DaysLate: 10, OverdueBand: book.Band115},
+		LastNotify: origin,
+	}
 	cool := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/contracts/c-late/notify", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/contracts/c-cool/notify", nil)
 	req.Header.Set("Idempotency-Key", "n-2")
 	h.ServeHTTP(cool, req)
 	assertPolicy(t, cool, http.StatusUnprocessableEntity, "notify_cooldown")
@@ -468,11 +472,13 @@ func TestHandler_CancelArmedAndSent(t *testing.T) {
 		t.Fatalf("state = %q, want CANCELLED", body.State)
 	}
 
-	sent, err := blocks.Request(t.Context(), vin)
+	sentVIN := "FPULSELSG00000031"
+	bk.details["c-sent"] = book.Detail{Contract: book.Contract{ID: "c-sent", VIN: sentVIN, DaysLate: 20}}
+	sent, err := blocks.Request(t.Context(), sentVIN)
 	if err != nil {
 		t.Fatalf("second request: %v", err)
 	}
-	blocks.NoteTelem(block.LastKnown{VIN: vin, Speed: 0, Ignition: false})
+	blocks.NoteTelem(block.LastKnown{VIN: sentVIN, Speed: 0, Ignition: false})
 	if err := blocks.Tick(t.Context()); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
@@ -484,7 +490,7 @@ func TestHandler_CancelArmedAndSent(t *testing.T) {
 		t.Fatalf("state = %q, want SENT", live.State)
 	}
 	refuse := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/contracts/c-cxl/block/cancel", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/contracts/c-sent/block/cancel", nil)
 	req.Header.Set("Idempotency-Key", "cxl-2")
 	h.ServeHTTP(refuse, req)
 	assertPolicy(t, refuse, http.StatusUnprocessableEntity, "in_transit")
@@ -647,7 +653,17 @@ func TestHandler_BodyTooLarge(t *testing.T) {
 		}},
 		keys: httpapiKeys(),
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/contracts/c1/notify", bytes.NewReader(bytes.Repeat([]byte("a"), 9*1024)))
+
+	ok := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts/c1/notify", bytes.NewReader(bytes.Repeat([]byte("a"), 8*1024)))
+	req.Header.Set("Idempotency-Key", "limit")
+	req.ContentLength = 8 * 1024
+	h.ServeHTTP(ok, req)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("8 KiB status = %d body=%s, want 200", ok.Code, ok.Body.Bytes())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/contracts/c1/notify", bytes.NewReader(bytes.Repeat([]byte("a"), 9*1024)))
 	req.Header.Set("Idempotency-Key", "big")
 	req.ContentLength = 9 * 1024
 	rec := httptest.NewRecorder()

@@ -605,6 +605,119 @@ func TestService_RefuseSecondUnlock(t *testing.T) {
 	}
 }
 
+func TestService_UnlockStaleAfterThirtySimDays(t *testing.T) {
+	t.Parallel()
+
+	st := newMemStore(testVIN)
+	real0 := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	clk := &stubClock{now: real0}
+	cal := calendarClock{
+		sim:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		real: real0,
+		mult: 14400,
+	}
+	svc := New(st, nil, WithClock(clk), WithCalendar(&cal))
+
+	rec, err := svc.Request(t.Context(), testVIN)
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+	svc.NoteTelem(parked(testVIN))
+	if err := svc.Tick(t.Context()); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if err := svc.Tick(t.Context()); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	svc.ApplyAck(rec.ID, true)
+	if !svc.Blocked(testVIN) {
+		t.Fatal("want blocked after ack")
+	}
+
+	cal.real = real0.Add(181 * time.Second)
+	cal.sim = cal.sim.Add(181 * 14400 * time.Second)
+	cutoff := cal.Simulated().Add(-30 * 24 * time.Hour)
+	if err := svc.UnlockStale(t.Context(), cutoff); err != nil {
+		t.Fatalf("UnlockStale: %v", err)
+	}
+	if svc.VehicleState(testVIN) != VehicleUnlockPending && svc.Blocked(testVIN) {
+		t.Fatalf("state = %s blocked=%v, want unlock pending or unblocked", svc.VehicleState(testVIN), svc.Blocked(testVIN))
+	}
+}
+
+func TestService_UnlockStaleKeepsRecentBlock(t *testing.T) {
+	t.Parallel()
+
+	st := newMemStore(testVIN)
+	real0 := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	clk := &stubClock{now: real0}
+	cal := calendarClock{
+		sim:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		real: real0,
+		mult: 14400,
+	}
+	svc := New(st, nil, WithClock(clk), WithCalendar(&cal))
+	rec, err := svc.Request(t.Context(), testVIN)
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+	svc.NoteTelem(parked(testVIN))
+	if err := svc.Tick(t.Context()); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if err := svc.Tick(t.Context()); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	svc.ApplyAck(rec.ID, true)
+
+	cal.real = real0.Add(174 * time.Second)
+	cal.sim = cal.sim.Add(174 * 14400 * time.Second)
+	cutoff := cal.Simulated().Add(-30 * 24 * time.Hour)
+	if err := svc.UnlockStale(t.Context(), cutoff); err != nil {
+		t.Fatalf("UnlockStale: %v", err)
+	}
+	if !svc.Blocked(testVIN) {
+		t.Fatal("29 simulated days must stay blocked")
+	}
+}
+
+func TestService_UnlockStaleWithoutCalendarIsNoop(t *testing.T) {
+	t.Parallel()
+
+	st := newMemStore(testVIN)
+	real0 := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	svc := New(st, nil, WithClock(&stubClock{now: real0}))
+	rec, err := svc.Request(t.Context(), testVIN)
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+	svc.NoteTelem(parked(testVIN))
+	if err := svc.Tick(t.Context()); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if err := svc.Tick(t.Context()); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	svc.ApplyAck(rec.ID, true)
+	cutoff := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := svc.UnlockStale(t.Context(), cutoff); err != nil {
+		t.Fatalf("UnlockStale: %v", err)
+	}
+	if !svc.Blocked(testVIN) {
+		t.Fatal("without calendar, UnlockStale must not unlock")
+	}
+}
+
+type calendarClock struct {
+	sim  time.Time
+	real time.Time
+	mult int
+}
+
+func (c *calendarClock) Simulated() time.Time { return c.sim }
+func (c *calendarClock) Real() time.Time      { return c.real }
+func (c *calendarClock) Multiplier() int      { return c.mult }
+
 func TestService_TickAndTelemRace(t *testing.T) {
 	t.Parallel()
 

@@ -717,7 +717,10 @@ func TestHub_Drain(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe("")
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 	hub.Drain()
 	if _, ok := <-events; ok {
@@ -729,7 +732,10 @@ func TestHub_DropOldest(t *testing.T) {
 	t.Parallel()
 
 	hub := httpapi.NewHub()
-	events, unsubscribe := hub.Subscribe("")
+	events, unsubscribe, err := hub.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	t.Cleanup(unsubscribe)
 
 	const extra = 1

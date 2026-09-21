@@ -10,9 +10,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
 	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
+
+type realNow struct{ now time.Time }
+
+func (r realNow) Now() time.Time { return r.now }
 
 func TestSeed_BookMixAndDeterminism(t *testing.T) {
 	t.Setenv("SIM_SEED", "1")
@@ -423,6 +428,120 @@ func TestPay_OldestOverdueAndHorizon(t *testing.T) {
 	if got.VIN != "FPULSELSG00000014" || got.DaysLate != 0 {
 		t.Fatalf("horizon pay = %+v", got)
 	}
+}
+
+func TestTick_UnlocksStaleAckedBlock(t *testing.T) {
+	t.Parallel()
+
+	origin := clock.Origin
+	real0 := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	clk := clock.Fixed(clock.ParseRate(clock.Rate4h), origin, real0)
+	mem := newMemStore()
+	vin := "FPULSELSG00000020"
+	mem.mustContract(t, vin, "Ana Costa", ProfileInadimplente, origin.AddDate(0, 0, -10), []store.SeedInstallment{
+		{DueOn: origin.AddDate(0, 0, -10), Amount: defaultInstallment},
+	})
+
+	blocks := block.New(nil, nil, block.WithClock(realNow{now: real0}), block.WithCalendar(clk))
+	rec, err := blocks.Request(t.Context(), vin)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	blocks.NoteTelem(block.LastKnown{VIN: vin, Speed: 0, Ignition: false})
+	if err := blocks.Tick(t.Context()); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if err := blocks.Tick(t.Context()); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	blocks.ApplyAck(rec.ID, true)
+	if !blocks.Blocked(vin) {
+		t.Fatal("want blocked before tick")
+	}
+
+	b := &Book{st: mem, clk: clk, seed: 1, log: New(mem, clk, nil).log}
+	b.SetUnblocker(blocks)
+	clk.SetReal(real0.Add(181 * time.Second))
+	if err := b.Tick(t.Context()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if blocks.VehicleState(vin) != block.VehicleUnlockPending && blocks.Blocked(vin) {
+		t.Fatalf("after tick state = %s blocked=%v, want pending unlock or unblocked", blocks.VehicleState(vin), blocks.Blocked(vin))
+	}
+}
+
+func TestTick_HealFloorAfterVisitorPay(t *testing.T) {
+	origin := clock.Origin
+	clk := clock.Fixed(clock.ParseRate(clock.Rate4h), origin, origin)
+	mem := newMemStore()
+	var lateID string
+	for i := range 36 {
+		vin := fmt.Sprintf("FPULSELSG000000%02d", i+1)
+		mem.mustContract(t, vin, "Ana Costa", ProfilePontual, origin, []store.SeedInstallment{
+			{DueOn: origin.AddDate(0, 0, 10), Amount: defaultInstallment},
+		})
+	}
+	for i := range 4 {
+		vin := fmt.Sprintf("FPULSELSG000000%02d", 37+i)
+		id := mem.mustContract(t, vin, "Bruno Lima", ProfileInadimplente, origin.AddDate(0, 0, -10), []store.SeedInstallment{
+			{DueOn: origin.AddDate(0, 0, -10), Amount: defaultInstallment},
+		})
+		if lateID == "" {
+			lateID = id
+		}
+	}
+	for i := range 24 {
+		mem.vehicles = append(mem.vehicles, store.LeasingVehicle{VIN: fmt.Sprintf("FPULSELSG000001%02d", i+1)})
+	}
+
+	b := New(mem, clk, nil)
+	beforePay, err := b.List(t.Context())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	need := floorNeed(len(beforePay))
+	if need == 0 || bandCount(beforePay, Band115) != need {
+		t.Fatalf("setup 1_15 = %d need=%d n=%d", bandCount(beforePay, Band115), need, len(beforePay))
+	}
+
+	if _, err := b.Pay(t.Context(), PayInput{ID: lateID, Origin: OriginVisitor, VisitorHash: "visitor"}); err != nil {
+		t.Fatalf("visitor pay: %v", err)
+	}
+	afterPay, err := b.List(t.Context())
+	if err != nil {
+		t.Fatalf("list after pay: %v", err)
+	}
+	if bandCount(afterPay, Band115) >= need {
+		t.Fatalf("after visitor pay 1_15 = %d, want below floor %d", bandCount(afterPay, Band115), need)
+	}
+
+	if err := b.Tick(t.Context()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	list, err := b.List(t.Context())
+	if err != nil {
+		t.Fatalf("list after tick: %v", err)
+	}
+	n := len(list)
+	if n < bookMin || n > bookMax {
+		t.Fatalf("active contracts = %d, want 40–60", n)
+	}
+	need = floorNeed(n)
+	for _, band := range []string{BandEmDia, Band115, Band1630, BandAcima30} {
+		if bandCount(list, band) < need {
+			t.Fatalf("band %s = %d, want >= %d of %d after visitor pay + healFloor", band, bandCount(list, band), need, n)
+		}
+	}
+}
+
+func bandCount(list []Contract, band string) int {
+	n := 0
+	for _, c := range list {
+		if c.OverdueBand == band {
+			n++
+		}
+	}
+	return n
 }
 
 func TestFilterByBand(t *testing.T) {

@@ -91,6 +91,9 @@ func TestClock_AdvancesFourHoursPerRealSecond(t *testing.T) {
 	if clk.Real().Equal(clk.Simulated()) {
 		t.Fatal("real time must stay independent of the simulated calendar")
 	}
+	if got := clk.Rate(); got.Label != Rate4h || got.Multiplier != 14400 {
+		t.Fatalf("Rate() = %+v, want 4h/s ×14400", got)
+	}
 }
 
 func TestClock_Snapshot(t *testing.T) {
