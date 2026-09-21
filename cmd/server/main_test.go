@@ -36,6 +36,37 @@ func TestReadySub_SignalsAfterN(t *testing.T) {
 	}
 }
 
+func TestOrderlyShutdown_DrainsSSEFirst(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	httpDone := make(chan struct{})
+	close(httpDone)
+	err := orderlyShutdown(shutdownHooks{
+		drain:    func() { order = append(order, "drain") },
+		stopHTTP: func() { order = append(order, "http") },
+		httpDone: httpDone,
+		stopSim:  func() { order = append(order, "sim") },
+		wait:     func() { order = append(order, "wait") },
+		closeBro: func() error {
+			order = append(order, "broker")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("orderlyShutdown() error = %v", err)
+	}
+	want := []string{"drain", "http", "sim", "wait", "broker"}
+	if len(order) != len(want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+}
+
 type nopSub struct{}
 
 func (nopSub) Subscribe(context.Context, string, ingest.MessageHandler) error {

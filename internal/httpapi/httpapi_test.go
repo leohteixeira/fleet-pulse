@@ -440,6 +440,54 @@ func TestHandler_GetCommand(t *testing.T) {
 	}
 }
 
+func TestHandler_SPAFallback(t *testing.T) {
+	t.Parallel()
+
+	h := httpapi.New(fakeStore{snap: seededSnapshot()}, httpapi.NewHub(), nil).Handler()
+
+	home := httptest.NewRequest(http.MethodGet, "/", nil)
+	homeRec := httptest.NewRecorder()
+	h.ServeHTTP(homeRec, home)
+	if homeRec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want %d", homeRec.Code, http.StatusOK)
+	}
+	if ct := homeRec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("GET / content-type = %q, want text/html", ct)
+	}
+	if !strings.Contains(homeRec.Body.String(), "id=\"root\"") && !strings.Contains(homeRec.Body.String(), "id='root'") {
+		t.Fatalf("GET / body missing root mount: %q", homeRec.Body.String())
+	}
+
+	unknown := httptest.NewRequest(http.MethodGet, "/painel/veiculo", nil)
+	unknownRec := httptest.NewRecorder()
+	h.ServeHTTP(unknownRec, unknown)
+	if unknownRec.Code != http.StatusOK {
+		t.Fatalf("fallback status = %d, want %d", unknownRec.Code, http.StatusOK)
+	}
+	if unknownRec.Body.String() != homeRec.Body.String() {
+		t.Fatal("unknown path did not fall back to index.html")
+	}
+
+	apiMiss := httptest.NewRequest(http.MethodGet, "/api/missing", nil)
+	apiRec := httptest.NewRecorder()
+	h.ServeHTTP(apiRec, apiMiss)
+	if apiRec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/missing status = %d, want %d", apiRec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHub_Drain(t *testing.T) {
+	t.Parallel()
+
+	hub := httpapi.NewHub()
+	events, unsubscribe := hub.Subscribe()
+	t.Cleanup(unsubscribe)
+	hub.Drain()
+	if _, ok := <-events; ok {
+		t.Fatal("subscriber channel still open after Drain")
+	}
+}
+
 func TestHub_DropOldest(t *testing.T) {
 	t.Parallel()
 
