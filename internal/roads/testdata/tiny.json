@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {"lat": 0.001, "lng": 0},
+    {"lat": 0, "lng": 0},
+    {"lat": 0, "lng": -0.001},
+    {"lat": -0.001, "lng": 0},
+    {"lat": 0, "lng": 0.001}
+  ],
+  "edges": [
+    {"from": 0, "to": 1, "meters": 111},
+    {"from": 1, "to": 0, "meters": 111},
+    {"from": 1, "to": 3, "meters": 111},
+    {"from": 3, "to": 1, "meters": 111},
+    {"from": 1, "to": 2, "meters": 111},
+    {"from": 4, "to": 1, "meters": 111}
+  ]
+}
