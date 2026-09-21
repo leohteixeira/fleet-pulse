@@ -1,6 +1,7 @@
-import { StrictMode, useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 
 import { Feed } from './Feed';
+import { ConsoleHeader } from './Header';
 import { MapView } from './MapView';
 import { Panel } from './Panel';
 import {
@@ -12,36 +13,20 @@ import {
   type CommandAction,
   type Snapshot,
 } from './state';
-import { FREEZE_COPY, STREAM_DOWN, STREAM_LIVE, type StreamStatus } from './stream';
-import { applyTheme, readTheme, type Theme } from './theme';
+import { createStreamController, FREEZE_COPY, type StreamSource, type StreamStatus } from './stream';
+import { useStreamBus } from './streamContext';
 
 export const SNAPSHOT_ERROR = 'Não foi possível carregar a frota.';
 
-export type StreamSource = {
-  addEventListener(type: string, listener: (event: Event) => void): void;
-  removeEventListener(type: string, listener: (event: Event) => void): void;
-  close(): void;
-};
-
-export type { StreamStatus } from './stream';
+export type { StreamSource, StreamStatus } from './stream';
 export { FREEZE_COPY, STREAM_DOWN, STREAM_LIVE, commandsBlocked } from './stream';
 
 export function App() {
+  const { status: stream, lastDataAt, now, theme, setTheme, subscribe } = useStreamBus();
   const [state, dispatch] = useReducer(reducer, initialState);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   const [doorFlash, setDoorFlash] = useState<'ok' | 'err' | null>(null);
-  const [theme, setTheme] = useState<Theme>(() => readTheme());
-  const [stream, setStream] = useState<StreamStatus>({ live: true, retries: 0 });
-  const [lastDataAt, setLastDataAt] = useState(() => Date.now());
   const flashFor = useRef<string | null>(null);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -49,7 +34,6 @@ export function App() {
       .then((snapshot) => {
         dispatch({ type: 'hydrate', snapshot });
         setError(null);
-        setNow(Date.now());
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
@@ -61,20 +45,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (!state.polygon) {
-      return;
-    }
-    return connectTelemetry(dispatch, EventSource, (status) => {
-      setStream(status);
-      if (status.live) {
-        setLastDataAt(Date.now());
+    return subscribe((type, data) => {
+      if (type === 'telemetry') {
+        dispatch({ type: 'patch', payload: data });
+      } else if (type === 'command') {
+        dispatch({ type: 'command', payload: data });
+      } else if (type === 'area-exit') {
+        dispatch({ type: 'area-exit', payload: data });
       }
     });
-  }, [state.polygon]);
+  }, [subscribe]);
 
   const selected = state.selectedVin ? state.vehicles[state.selectedVin] : undefined;
   const selectedCommands = selected ? state.commands[selected.vin] : undefined;
@@ -99,8 +79,7 @@ export function App() {
 
   return (
     <div className="shell">
-      <header className="header">
-        <h1>FLEET PULSE</h1>
+      <ConsoleHeader variant="frota" theme={theme} onTheme={setTheme} stream={stream} now={now}>
         <div className="kpis">
           <Kpi label="Veículos" value={kpis.vehicles} tone="idle" />
           <Kpi label="Disponíveis" value={kpis.disponiveis} tone="ok" />
@@ -109,15 +88,7 @@ export function App() {
           <Kpi label="Offline" value={kpis.offline} tone="idle" />
           <Kpi label="Pendentes" value={kpis.pendentes} tone="accent" />
         </div>
-        <div className="header-tools">
-          <ThemeToggle theme={theme} onChange={setTheme} />
-          <span className={`stream-pill${stream.live ? ' is-live' : ' is-down'}`}>
-            <span className="stream-dot" />
-            {stream.live ? STREAM_LIVE : STREAM_DOWN(stream.retries)}
-            {stream.live ? <span className="stream-clock">{formatClock(now)}</span> : null}
-          </span>
-        </div>
-      </header>
+      </ConsoleHeader>
       {error ? (
         <p className="error" role="alert">
           {error}
@@ -164,38 +135,6 @@ export function App() {
   );
 }
 
-function ThemeToggle({ theme, onChange }: { theme: Theme; onChange: (theme: Theme) => void }) {
-  const light = theme === 'light';
-  return (
-    <div className="theme-toggle" role="group" aria-label="Tema">
-      <span className={`theme-knob${light ? ' is-light' : ''}`} aria-hidden="true" />
-      <button
-        type="button"
-        className={`theme-opt${light ? ' is-active' : ''}`}
-        title="Tema claro"
-        aria-pressed={light}
-        onClick={() => onChange('light')}
-      >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-          <circle cx="7" cy="7" r="2.6" />
-          <path d="M7 1v1.6M7 11.4V13M1 7h1.6M11.4 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M2.8 11.2l1.1-1.1M10.1 3.9l1.1-1.1" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        className={`theme-opt${!light ? ' is-active' : ''}`}
-        title="Tema escuro"
-        aria-pressed={!light}
-        onClick={() => onChange('dark')}
-      >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true">
-          <path d="M11.5 8.6A5 5 0 0 1 5.4 2.5a5 5 0 1 0 6.1 6.1z" />
-        </svg>
-      </button>
-    </div>
-  );
-}
-
 function Kpi({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
     <div className="kpi">
@@ -206,57 +145,26 @@ function Kpi({ label, value, tone }: { label: string; value: number; tone: strin
   );
 }
 
-export function Root() {
-  return (
-    <StrictMode>
-      <App />
-    </StrictMode>
-  );
-}
-
 export function connectTelemetry(
   dispatch: (action: Action) => void,
   EventSourceCtor: new (url: string) => StreamSource,
   onStatus?: (status: StreamStatus) => void,
 ): () => void {
-  const source = new EventSourceCtor('/api/stream?fleet=rental');
-  let retries = 0;
-  const markLive = () => {
-    retries = 0;
-    onStatus?.({ live: true, retries: 0 });
-  };
-  const onTelemetry = (event: Event) => {
-    dispatch({ type: 'patch', payload: (event as MessageEvent<string>).data });
-    markLive();
-  };
-  const onCommand = (event: Event) => {
-    dispatch({ type: 'command', payload: (event as MessageEvent<string>).data });
-    markLive();
-  };
-  const onAreaExit = (event: Event) => {
-    dispatch({ type: 'area-exit', payload: (event as MessageEvent<string>).data });
-    markLive();
-  };
-  const onOpen = () => {
-    markLive();
-  };
-  const onError = () => {
-    retries = Math.min(retries + 1, 8);
-    onStatus?.({ live: false, retries });
-  };
-  source.addEventListener('telemetry', onTelemetry);
-  source.addEventListener('command', onCommand);
-  source.addEventListener('area-exit', onAreaExit);
-  source.addEventListener('open', onOpen);
-  source.addEventListener('error', onError);
-  return () => {
-    source.removeEventListener('telemetry', onTelemetry);
-    source.removeEventListener('command', onCommand);
-    source.removeEventListener('area-exit', onAreaExit);
-    source.removeEventListener('open', onOpen);
-    source.removeEventListener('error', onError);
-    source.close();
-  };
+  const session = createStreamController({
+    fleet: 'rental',
+    EventSourceCtor,
+    onEvent: (type, data) => {
+      if (type === 'telemetry') {
+        dispatch({ type: 'patch', payload: data });
+      } else if (type === 'command') {
+        dispatch({ type: 'command', payload: data });
+      } else if (type === 'area-exit') {
+        dispatch({ type: 'area-exit', payload: data });
+      }
+    },
+    onStatus,
+  });
+  return () => session.close();
 }
 
 export function formatClock(now: number): string {

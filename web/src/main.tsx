@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 
-import { Root } from './App';
+import { Root } from './Shell';
 import 'leaflet/dist/leaflet.css';
 import './styles.css';
 
