@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.golang/paho"
+
+	"github.com/leohteixeira/fleet-pulse/internal/roads"
 )
 
 const (
@@ -33,10 +35,6 @@ const (
 	wanderFloor = -46.70
 	kmPerDegLat = 111.0
 	visualScale = 1.2
-	boundSouth  = -23.60
-	boundNorth  = -23.51
-	boundWest   = -46.71
-	boundEast   = -46.58
 )
 
 var models = []string{
@@ -69,6 +67,10 @@ type Vehicle struct {
 	Trip      float64
 	IsOffline bool
 	refuse    func() bool
+	edge      int
+	along     float64
+	onGraph   bool
+	westPick  func(from int, outgoing []int) int
 }
 
 type telemetry struct {
@@ -105,11 +107,12 @@ type dialFunc func(ctx context.Context, addr, clientID string) (mqttClient, erro
 
 // NewFleet returns 20 vehicles around Centro, including exactly one offline VIN.
 func NewFleet() []Vehicle {
+	g := roads.Default()
 	fleet := make([]Vehicle, 0, FleetSize)
 	for i := range FleetSize {
 		n := i + 1
 		vin := fmt.Sprintf("FPULSESAO%08d", n)
-		fleet = append(fleet, Vehicle{
+		v := Vehicle{
 			VIN:       vin,
 			DisplayID: fmt.Sprintf("V%02d", n),
 			Plate:     plate(i),
@@ -124,7 +127,9 @@ func NewFleet() []Vehicle {
 			Odometer:  4200 + float64(i)*1000,
 			Trip:      float64((i%7)+1) * 0.4,
 			IsOffline: vin == OfflineVIN,
-		})
+		}
+		applyCursor(&v, g.Snap(v.Lat, v.Lng))
+		fleet = append(fleet, v)
 	}
 	return fleet
 }
@@ -276,9 +281,17 @@ func stepVehicle(v *Vehicle) {
 	}
 	if v.VIN == WanderVIN {
 		if v.Lng > wanderFloor {
-			v.Lng -= wanderStep
+			g := ensureOnGraph(v)
+			if v.westPick == nil {
+				v.westPick = g.NewWestPicker()
+			}
+			startLat, startLng := v.Lat, v.Lng
+			meters := wanderMeters(v.Lat)
+			applyCursor(v, g.Advance(cursorOf(v), meters, v.westPick))
+			v.Heading = displacementHeading(startLat, startLng, v.Lat, v.Lng)
+			v.Odometer += meters / 1000
+			v.Trip += meters / 1000
 		}
-		v.Heading = 270
 		if v.Speed <= 0 {
 			v.Speed = 22
 		}
@@ -289,39 +302,83 @@ func stepVehicle(v *Vehicle) {
 	if !v.Ignition || v.Speed <= 0 {
 		return
 	}
-	v.Heading = wrapHeading(v.Heading + rand.IntN(29) - 14)
 	if rand.IntN(100) < 8 {
 		v.Speed = max(8, min(70, v.Speed+rand.IntN(25)-12))
 	}
-	advance(v, PublishInterval)
-	if v.Lat < boundSouth || v.Lat > boundNorth || v.Lng < boundWest || v.Lng > boundEast {
-		v.Heading = headingToward(v.Lat, v.Lng, CentroLat, CentroLng)
-	}
-}
-
-func advance(v *Vehicle, dt time.Duration) {
-	km := float64(v.Speed) * dt.Hours() * visualScale
-	rad := float64(v.Heading) * math.Pi / 180
-	cosLat := math.Cos(v.Lat * math.Pi / 180)
-	if cosLat == 0 {
-		cosLat = 1
-	}
-	v.Lat += km / kmPerDegLat * math.Cos(rad)
-	v.Lng += km / kmPerDegLat * math.Sin(rad) / cosLat
+	g := ensureOnGraph(v)
+	km := float64(v.Speed) * PublishInterval.Hours() * visualScale
+	arrived := v.edge
+	applyCursor(v, g.Advance(cursorOf(v), km*1000, pickRoam(g, arrived)))
 	v.Odometer += km
 	v.Trip += km
 }
 
-func headingToward(lat, lng, destLat, destLng float64) int {
-	return wrapHeading(int(math.Atan2(destLng-lng, destLat-lat) * 180 / math.Pi))
+func applyCursor(v *Vehicle, c roads.Cursor) {
+	v.Lat = c.Lat
+	v.Lng = c.Lng
+	v.Heading = c.Heading
+	v.edge = c.Edge
+	v.along = c.Along
+	v.onGraph = true
 }
 
-func wrapHeading(h int) int {
+func cursorOf(v *Vehicle) roads.Cursor {
+	return roads.Cursor{
+		Edge:    v.edge,
+		Along:   v.along,
+		Lat:     v.Lat,
+		Lng:     v.Lng,
+		Heading: v.Heading,
+	}
+}
+
+func ensureOnGraph(v *Vehicle) *roads.Graph {
+	g := roads.Default()
+	if !v.onGraph {
+		applyCursor(v, g.Snap(v.Lat, v.Lng))
+	}
+	return g
+}
+
+func displacementHeading(fromLat, fromLng, toLat, toLng float64) int {
+	h := int(math.Round(math.Atan2(toLng-fromLng, toLat-fromLat) * 180 / math.Pi))
 	h %= 360
 	if h < 0 {
 		h += 360
 	}
 	return h
+}
+
+func wanderMeters(lat float64) float64 {
+	cosLat := math.Cos(lat * math.Pi / 180)
+	if cosLat == 0 {
+		cosLat = 1
+	}
+	return wanderStep * kmPerDegLat * cosLat * 1000
+}
+
+func pickRoam(g *roads.Graph, arrived int) func(from int, outgoing []int) int {
+	cameFrom := -1
+	if arrived >= 0 && arrived < len(g.Edges) {
+		cameFrom = g.Edges[arrived].From
+	}
+	return func(from int, outgoing []int) int {
+		choices := outgoing
+		if cameFrom >= 0 && len(outgoing) > 1 {
+			filtered := make([]int, 0, len(outgoing))
+			for _, ei := range outgoing {
+				if g.Edges[ei].To != cameFrom {
+					filtered = append(filtered, ei)
+				}
+			}
+			if len(filtered) > 0 {
+				choices = filtered
+			}
+		}
+		chosen := choices[rand.IntN(len(choices))]
+		cameFrom = from
+		return chosen
+	}
 }
 
 func publishTelemetry(ctx context.Context, v Vehicle, pub publisher) error {
