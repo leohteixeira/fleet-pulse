@@ -105,6 +105,7 @@ paths:
   /api/commands/{id}:
     get:
       summary: Command state
+      description: Returns a rental door command or a leasing block/unlock command by id. JSON keys are the same for both fleets.
       operationId: getCommand
       parameters:
         - name: id
@@ -194,13 +195,13 @@ components:
         vin: { type: string }
         action:
           type: string
-          enum: [unlock, lock]
+          enum: [unlock, lock, block]
         state:
           $ref: '#/components/schemas/CommandState'
         correlationId: { type: string }
     CommandState:
       type: string
-      enum: [PENDING, SENT, ACKED, FAILED, TIMEOUT]
+      enum: [PENDING, SENT, ACKED, FAILED, TIMEOUT, REQUESTED, ARMED, CANCELLED]
     Clock:
       type: object
       required: [simulated, real, rate, multiplier]
