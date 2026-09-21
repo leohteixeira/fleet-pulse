@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
 	"github.com/leohteixeira/fleet-pulse/internal/book"
 	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
@@ -58,6 +59,11 @@ type Contracts interface {
 	List(ctx context.Context) ([]book.Contract, error)
 }
 
+// LeasingCommands looks up a leasing command by id. Same JSON keys as rental.
+type LeasingCommands interface {
+	Get(id string) (block.Record, bool)
+}
+
 // Option configures optional HTTP ports (clock, contracts).
 type Option func(*Server)
 
@@ -75,6 +81,13 @@ func WithContracts(c Contracts) Option {
 	}
 }
 
+// WithLeasingCommands lets GET /api/commands/{id} resolve leasing records.
+func WithLeasingCommands(c LeasingCommands) Option {
+	return func(s *Server) {
+		s.leasing = c
+	}
+}
+
 // Server is the stdlib HTTP surface for snapshot, lock/unlock, health, and SSE.
 type Server struct {
 	store     Store
@@ -83,6 +96,7 @@ type Server struct {
 	ready     Ready
 	clock     Clock
 	contracts Contracts
+	leasing   LeasingCommands
 	files     fs.FS
 }
 
@@ -279,18 +293,24 @@ func (s *Server) doorCommand(w http.ResponseWriter, r *http.Request, submit func
 }
 
 func (s *Server) command(w http.ResponseWriter, r *http.Request) {
-	if s.unlocker == nil {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
+	id := r.PathValue("id")
+	if s.unlocker != nil {
+		if rec, ok := s.unlocker.Get(id); ok {
+			if err := writeJSON(w, http.StatusOK, rec); err != nil {
+				slog.Error("command response", "err", err)
+			}
+			return
+		}
 	}
-	rec, ok := s.unlocker.Get(r.PathValue("id"))
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
+	if s.leasing != nil {
+		if rec, ok := s.leasing.Get(id); ok {
+			if err := writeJSON(w, http.StatusOK, rec); err != nil {
+				slog.Error("command response", "err", err)
+			}
+			return
+		}
 	}
-	if err := writeJSON(w, http.StatusOK, rec); err != nil {
-		slog.Error("command response", "err", err)
-	}
+	http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 }
 
 func (s *Server) writeCommandError(w http.ResponseWriter, err error) {

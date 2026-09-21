@@ -12,13 +12,16 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/leohteixeira/fleet-pulse/internal/block"
 	"github.com/leohteixeira/fleet-pulse/internal/book"
 	"github.com/leohteixeira/fleet-pulse/internal/broker"
 	"github.com/leohteixeira/fleet-pulse/internal/clock"
 	"github.com/leohteixeira/fleet-pulse/internal/command"
 	"github.com/leohteixeira/fleet-pulse/internal/httpapi"
 	"github.com/leohteixeira/fleet-pulse/internal/ingest"
+	"github.com/leohteixeira/fleet-pulse/internal/outbox"
 	"github.com/leohteixeira/fleet-pulse/internal/sim"
 	"github.com/leohteixeira/fleet-pulse/internal/store"
 )
@@ -26,16 +29,22 @@ import (
 const defaultBindAddr = "0.0.0.0:1883"
 
 var (
-	_ ingest.Subscriber = (*broker.Broker)(nil)
-	_ ingest.Sink       = telemetrySink{}
-	_ ingest.AckSink    = (*command.Service)(nil)
-	_ httpapi.Store     = (*store.Postgres)(nil)
-	_ httpapi.Ready     = (*store.Postgres)(nil)
-	_ httpapi.Unlocker  = (*command.Service)(nil)
-	_ httpapi.Clock     = (*clock.Clock)(nil)
-	_ httpapi.Contracts = (*book.Book)(nil)
-	_ command.Publisher = (*broker.Broker)(nil)
-	_ command.Vehicles  = (*store.Postgres)(nil)
+	_ ingest.Subscriber       = (*broker.Broker)(nil)
+	_ ingest.Sink             = telemetrySink{}
+	_ ingest.Sink             = leasingTelem{}
+	_ ingest.AckSink          = (*command.Service)(nil)
+	_ ingest.AckSink          = leasingAck{}
+	_ httpapi.Store           = (*store.Postgres)(nil)
+	_ httpapi.Ready           = (*store.Postgres)(nil)
+	_ httpapi.Unlocker        = (*command.Service)(nil)
+	_ httpapi.Clock           = (*clock.Clock)(nil)
+	_ httpapi.Contracts       = (*book.Book)(nil)
+	_ command.Publisher       = (*broker.Broker)(nil)
+	_ command.Vehicles        = (*store.Postgres)(nil)
+	_ block.Store             = (*store.Postgres)(nil)
+	_ outbox.Store            = (*store.Postgres)(nil)
+	_ outbox.Publisher        = (*broker.Broker)(nil)
+	_ httpapi.LeasingCommands = (*block.Service)(nil)
 )
 
 var errDatabaseURLRequired = errors.New("database_url is required")
@@ -94,13 +103,22 @@ func run(log *slog.Logger) error {
 		}
 		hub.Publish(httpapi.Event{Name: "command", Data: data})
 	})
+	blocks := block.New(pg, log)
+	if err := blocks.Load(ctx); err != nil {
+		_ = b.Close()
+		return fmt.Errorf("load leasing commands: %w", err)
+	}
+	relay := outbox.New(pg, b, log)
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 6)
 	ready := newReadySub(b, 4)
 
 	wg.Go(func() {
-		if err := ingest.Run(ctx, ready, sink, cmds, log); err != nil && !errors.Is(err, context.Canceled) {
+		if err := ingest.Run(ctx, ready, sink, cmds, log, ingest.WithLeasing(
+			leasingTelem{svc: blocks},
+			leasingAck{svc: blocks},
+		)); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("ingest: %w", err)
 		}
 	})
@@ -112,6 +130,7 @@ func run(log *slog.Logger) error {
 
 	httpCtx, stopHTTP := context.WithCancel(context.Background())
 	simCtx, stopSim := context.WithCancel(context.Background())
+	relayCtx, stopRelay := context.WithCancel(context.Background())
 	handler := httpapi.New(
 		pg,
 		hub,
@@ -119,6 +138,7 @@ func run(log *slog.Logger) error {
 		pg,
 		httpapi.WithClock(clk),
 		httpapi.WithContracts(bk),
+		httpapi.WithLeasingCommands(blocks),
 	).Handler()
 	httpDone := make(chan struct{})
 	wg.Go(func() {
@@ -132,6 +152,12 @@ func run(log *slog.Logger) error {
 	})
 	wg.Go(func() {
 		bk.Run(ctx)
+	})
+	wg.Go(func() {
+		blocks.Run(ctx)
+	})
+	wg.Go(func() {
+		relay.Run(relayCtx)
 	})
 
 	wg.Go(func() {
@@ -149,10 +175,18 @@ func run(log *slog.Logger) error {
 	}
 
 	shutErr := orderlyShutdown(shutdownHooks{
-		drain:     hub.Drain,
-		stopHTTP:  stopHTTP,
-		httpDone:  httpDone,
-		stopSim:   stopSim,
+		drain:    hub.Drain,
+		stopHTTP: stopHTTP,
+		httpDone: httpDone,
+		stopSim:  stopSim,
+		flushRelay: func() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := relay.Flush(flushCtx); err != nil {
+				log.Error("outbox flush failed", "err", err)
+			}
+		},
+		stopRelay: stopRelay,
 		wait:      wg.Wait,
 		closeBro:  b.Close,
 		closePool: pg.Close,
@@ -168,13 +202,15 @@ func run(log *slog.Logger) error {
 }
 
 type shutdownHooks struct {
-	drain     func()
-	stopHTTP  func()
-	httpDone  <-chan struct{}
-	stopSim   func()
-	wait      func()
-	closeBro  func() error
-	closePool func()
+	drain      func()
+	stopHTTP   func()
+	httpDone   <-chan struct{}
+	stopSim    func()
+	flushRelay func()
+	stopRelay  func()
+	wait       func()
+	closeBro   func() error
+	closePool  func()
 }
 
 func orderlyShutdown(h shutdownHooks) error {
@@ -189,6 +225,12 @@ func orderlyShutdown(h shutdownHooks) error {
 	}
 	if h.stopSim != nil {
 		h.stopSim()
+	}
+	if h.flushRelay != nil {
+		h.flushRelay()
+	}
+	if h.stopRelay != nil {
+		h.stopRelay()
 	}
 	if h.wait != nil {
 		h.wait()
@@ -287,6 +329,42 @@ func (s telemetrySink) Apply(t ingest.Telemetry) {
 		return
 	}
 	s.hub.Publish(httpapi.Event{Name: "area-exit", Data: payload})
+}
+
+type leasingTelem struct {
+	svc *block.Service
+}
+
+func (l leasingTelem) Apply(t ingest.Telemetry) {
+	if l.svc == nil {
+		return
+	}
+	l.svc.NoteTelem(block.LastKnown{
+		VIN:       t.VIN,
+		Speed:     t.Speed,
+		Ignition:  t.Ignition,
+		Lat:       t.Lat,
+		Lng:       t.Lng,
+		Battery:   t.Battery,
+		Heading:   t.Heading,
+		Locked:    t.Locked,
+		Odometer:  t.Odometer,
+		Trip:      t.Trip,
+		Plate:     t.Plate,
+		Model:     t.Model,
+		DisplayID: t.DisplayID,
+	})
+}
+
+type leasingAck struct {
+	svc *block.Service
+}
+
+func (l leasingAck) Apply(commandID string, ok bool) {
+	if l.svc == nil {
+		return
+	}
+	l.svc.ApplyAck(commandID, ok)
 }
 
 func rosterFromSim(fleet []sim.Vehicle) []store.Vehicle {

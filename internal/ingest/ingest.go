@@ -62,8 +62,24 @@ type Telemetry struct {
 	DisplayID string  `json:"displayId"`
 }
 
+// Option configures optional leasing ports without mixing them into rental sinks.
+type Option func(*runOpts)
+
+type runOpts struct {
+	leasing     Sink
+	leasingAcks AckSink
+}
+
+// WithLeasing routes leasing telemetry and acks to dedicated ports.
+func WithLeasing(sink Sink, acks AckSink) Option {
+	return func(o *runOpts) {
+		o.leasing = sink
+		o.leasingAcks = acks
+	}
+}
+
 // Run subscribes to telemetry and ack, applies successful parses, and unsubscribes when ctx is cancelled.
-func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog.Logger) error {
+func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog.Logger, opts ...Option) error {
 	if log == nil {
 		return errors.New("ingest: logger is required")
 	}
@@ -75,6 +91,12 @@ func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog
 	}
 	if acks == nil {
 		return errors.New("ingest: ack sink is required")
+	}
+	var cfg runOpts
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
 	}
 
 	if err := sub.Subscribe(ctx, TelemetryFilter, func(topic string, payload []byte) {
@@ -89,7 +111,7 @@ func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog
 		return fmt.Errorf("subscribe ack: %w", err)
 	}
 	if err := sub.Subscribe(ctx, LeasingTelemetryFilter, func(topic string, payload []byte) {
-		handleLeasing(log, topic, payload)
+		handleLeasing(log, cfg.leasing, topic, payload)
 	}); err != nil {
 		unsubCtx := context.WithoutCancel(ctx)
 		_ = sub.Unsubscribe(unsubCtx, TelemetryFilter)
@@ -97,7 +119,7 @@ func Run(ctx context.Context, sub Subscriber, sink Sink, acks AckSink, log *slog
 		return fmt.Errorf("subscribe leasing telemetry: %w", err)
 	}
 	if err := sub.Subscribe(ctx, LeasingAckFilter, func(topic string, payload []byte) {
-		handleLeasingAck(log, topic, payload)
+		handleLeasingAck(log, cfg.leasingAcks, topic, payload)
 	}); err != nil {
 		unsubCtx := context.WithoutCancel(ctx)
 		_ = sub.Unsubscribe(unsubCtx, TelemetryFilter)
@@ -144,22 +166,28 @@ func handleAck(log *slog.Logger, acks AckSink, topic string, payload []byte) {
 	acks.Apply(a.CommandID, a.OK)
 }
 
-func handleLeasing(log *slog.Logger, topic string, payload []byte) {
+func handleLeasing(log *slog.Logger, sink Sink, topic string, payload []byte) {
 	p, err := parse(payload)
 	if err != nil {
 		log.Warn("skipping leasing telemetry", "topic", topic, "err", err)
 		return
 	}
 	log.Info("leasing telemetry", "vin", p.VIN, "lat", p.Lat, "lng", p.Lng)
+	if sink != nil {
+		sink.Apply(p)
+	}
 }
 
-func handleLeasingAck(log *slog.Logger, topic string, payload []byte) {
+func handleLeasingAck(log *slog.Logger, acks AckSink, topic string, payload []byte) {
 	a, err := parseAck(payload)
 	if err != nil {
 		log.Warn("skipping leasing ack", "topic", topic, "err", err)
 		return
 	}
 	log.Info("leasing ack", "commandId", a.CommandID, "ok", a.OK)
+	if acks != nil {
+		acks.Apply(a.CommandID, a.OK)
+	}
 }
 
 type ackPayload struct {

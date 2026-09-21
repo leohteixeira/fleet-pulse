@@ -95,6 +95,8 @@ type Vehicle struct {
 	incident         incidentState
 	nextIncidentAt   int
 	nextIncidentKind incidentKind
+	blocked          bool
+	unlockPending    bool
 }
 
 type incidentState struct {
@@ -389,6 +391,10 @@ func stepVehicle(v *Vehicle) {
 	if v.IsOffline {
 		return
 	}
+	if v.blocked || v.unlockPending {
+		v.Ignition = false
+		return
+	}
 	if v.VIN == WanderVIN {
 		if v.Lng > wanderFloor {
 			g := ensureOnGraph(v)
@@ -610,13 +616,26 @@ func ackCommand(ctx context.Context, v *Vehicle, payload []byte, pub publisher) 
 	if err := json.Unmarshal(payload, &cmd); err != nil || cmd.ID == "" {
 		return nil
 	}
-	ok := !v.rollRefuse()
+	ok := commandAckOK(v, cmd.Action)
 	if ok {
 		switch cmd.Action {
 		case "lock":
 			v.Locked = true
 		case "unlock":
 			v.Locked = false
+			v.blocked = false
+			v.unlockPending = false
+			if v.topicPrefix() == PrefixLeasing {
+				v.Ignition = true
+				if v.Speed <= 0 {
+					v.Speed = 18
+				}
+			}
+		case "block":
+			v.blocked = true
+			v.unlockPending = false
+			v.Ignition = false
+			v.Speed = 0
 		}
 		offline := v.incident.kind == incidentOffline || v.incident.kind == incidentSignalLoss
 		if !offline {
@@ -631,6 +650,20 @@ func ackCommand(ctx context.Context, v *Vehicle, payload []byte, pub publisher) 
 		return fmt.Errorf("encode ack: %w", err)
 	}
 	return pub.Publish(ctx, v.ackTopic(), raw)
+}
+
+func commandAckOK(v *Vehicle, action string) bool {
+	switch action {
+	case "block":
+		return !v.RefuseBlock()
+	case "unlock":
+		if v.topicPrefix() == PrefixLeasing {
+			return true
+		}
+		return !v.rollRefuse()
+	default:
+		return !v.rollRefuse()
+	}
 }
 
 func plate(i int) string {
