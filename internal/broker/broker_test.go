@@ -160,11 +160,11 @@ func TestBroker_StartListensOnTCP(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = b.Close() })
 
-	conn, err := net.DialTimeout("tcp", b.DialAddr(), time.Second)
-	if err != nil {
-		t.Fatalf("dial broker: %v", err)
+	// A raw TCP dial leaves mochi-mqtt in EstablishConnection during Close and
+	// races inside the vendor server. A full MQTT session is waited on.
+	if err := publishMQTT(t.Context(), b.DialAddr(), "listen-probe", "fleet/TESTVIN000000001/telemetry", []byte(`{}`)); err != nil {
+		t.Fatalf("mqtt connect: %v", err)
 	}
-	_ = conn.Close()
 }
 
 type nopSink struct{}
