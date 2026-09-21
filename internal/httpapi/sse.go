@@ -9,15 +9,25 @@ import (
 
 const clientBufferSize = 32
 
+const (
+	// FleetRental is the required stream query for Frota.
+	FleetRental = "rental"
+	// FleetLeasing is the required stream query for Carteira.
+	FleetLeasing = "leasing"
+)
+
 // Event is one SSE frame. Telemetry patches use Name "telemetry".
+// Fleet is set at publish time and used to filter GET /api/stream?fleet=.
 type Event struct {
-	Name string
-	Data []byte
+	Name  string
+	Data  []byte
+	Fleet string
 }
 
 type client struct {
 	mu       sync.Mutex
 	ch       chan Event
+	fleet    string
 	isClosed bool
 }
 
@@ -34,9 +44,10 @@ func NewHub() *Hub {
 
 var _ HubPort = (*Hub)(nil)
 
-// Subscribe registers a per-client buffer. The caller must unsubscribe.
-func (h *Hub) Subscribe() (<-chan Event, func()) {
-	c := &client{ch: make(chan Event, clientBufferSize)}
+// Subscribe registers a per-client buffer. Empty fleet receives every event.
+// The caller must unsubscribe.
+func (h *Hub) Subscribe(fleet string) (<-chan Event, func()) {
+	c := &client{ch: make(chan Event, clientBufferSize), fleet: fleet}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()
@@ -84,6 +95,9 @@ func (c *client) enqueue(ev Event) {
 	if c.isClosed {
 		return
 	}
+	if c.fleet != "" && ev.Fleet != "" && c.fleet != ev.Fleet {
+		return
+	}
 	ev.Data = bytes.Clone(ev.Data)
 	if len(c.ch) == cap(c.ch) {
 		<-c.ch
@@ -102,13 +116,19 @@ func (c *client) close() {
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
+	fleet := r.URL.Query().Get("fleet")
+	if fleet != FleetRental && fleet != FleetLeasing {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	events, unsubscribe := s.hub.Subscribe()
+	events, unsubscribe := s.hub.Subscribe(fleet)
 	defer unsubscribe()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -126,6 +146,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case ev, ok := <-events:
 			if !ok {
 				return
+			}
+			if ev.Fleet != fleet {
+				continue
 			}
 			if err := writeSSE(w, ev); err != nil {
 				return

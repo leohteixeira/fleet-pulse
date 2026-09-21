@@ -40,6 +40,72 @@ func (q *Queries) EndContract(ctx context.Context, arg EndContractParams) error 
 	return err
 }
 
+const getContract = `-- name: GetContract :one
+SELECT
+    c.id,
+    c.vin,
+    c.payer_profile,
+    c.installment_value,
+    c.total_installments,
+    c.paid_count,
+    c.started_on,
+    cu.name AS customer_name
+FROM contracts c
+JOIN customers cu ON cu.id = c.customer_id
+JOIN vehicles v ON v.vin = c.vin
+WHERE c.id = $1
+  AND v.fleet = 'leasing'
+`
+
+type GetContractRow struct {
+	ID                pgtype.UUID
+	Vin               string
+	PayerProfile      string
+	InstallmentValue  pgtype.Numeric
+	TotalInstallments int32
+	PaidCount         int32
+	StartedOn         pgtype.Date
+	CustomerName      string
+}
+
+func (q *Queries) GetContract(ctx context.Context, id pgtype.UUID) (GetContractRow, error) {
+	row := q.db.QueryRow(ctx, getContract, id)
+	var i GetContractRow
+	err := row.Scan(
+		&i.ID,
+		&i.Vin,
+		&i.PayerProfile,
+		&i.InstallmentValue,
+		&i.TotalInstallments,
+		&i.PaidCount,
+		&i.StartedOn,
+		&i.CustomerName,
+	)
+	return i, err
+}
+
+const getLastNotify = `-- name: GetLastNotify :one
+SELECT id, contract_id, action, payload, visitor_hash, created_at
+FROM audit_log
+WHERE contract_id = $1 AND action = 'notify'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLastNotify(ctx context.Context, contractID pgtype.UUID) (AuditLog, error) {
+	row := q.db.QueryRow(ctx, getLastNotify, contractID)
+	var i AuditLog
+	err := row.Scan(
+		&i.ID,
+		&i.ContractID,
+		&i.Action,
+		&i.Payload,
+		&i.VisitorHash,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const incrementPaidCount = `-- name: IncrementPaidCount :exec
 UPDATE contracts
 SET paid_count = paid_count + 1
@@ -87,6 +153,31 @@ func (q *Queries) InsertContract(ctx context.Context, arg InsertContractParams) 
 		arg.StartedOn,
 	)
 	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertContractAudit = `-- name: InsertContractAudit :one
+INSERT INTO audit_log (contract_id, action, payload, visitor_hash)
+VALUES ($1, $2, $3, $4)
+RETURNING id
+`
+
+type InsertContractAuditParams struct {
+	ContractID  pgtype.UUID
+	Action      string
+	Payload     []byte
+	VisitorHash pgtype.Text
+}
+
+func (q *Queries) InsertContractAudit(ctx context.Context, arg InsertContractAuditParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertContractAudit,
+		arg.ContractID,
+		arg.Action,
+		arg.Payload,
+		arg.VisitorHash,
+	)
+	var id int64
 	err := row.Scan(&id)
 	return id, err
 }
@@ -279,6 +370,40 @@ func (q *Queries) ListActivePayments(ctx context.Context) ([]ListActivePaymentsR
 	return items, nil
 }
 
+const listAuditByContract = `-- name: ListAuditByContract :many
+SELECT id, contract_id, action, payload, visitor_hash, created_at
+FROM audit_log
+WHERE contract_id = $1
+ORDER BY created_at, id
+`
+
+func (q *Queries) ListAuditByContract(ctx context.Context, contractID pgtype.UUID) ([]AuditLog, error) {
+	rows, err := q.db.Query(ctx, listAuditByContract, contractID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditLog{}
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ContractID,
+			&i.Action,
+			&i.Payload,
+			&i.VisitorHash,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFreeLeasingVins = `-- name: ListFreeLeasingVins :many
 SELECT v.vin
 FROM vehicles v
@@ -305,6 +430,113 @@ func (q *Queries) ListFreeLeasingVins(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		items = append(items, vin)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInstallmentsByContract = `-- name: ListInstallmentsByContract :many
+SELECT i.id, i.contract_id, i.due_on, i.amount
+FROM installments i
+WHERE i.contract_id = $1
+ORDER BY i.due_on
+`
+
+func (q *Queries) ListInstallmentsByContract(ctx context.Context, contractID pgtype.UUID) ([]Installment, error) {
+	rows, err := q.db.Query(ctx, listInstallmentsByContract, contractID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Installment{}
+	for rows.Next() {
+		var i Installment
+		if err := rows.Scan(
+			&i.ID,
+			&i.ContractID,
+			&i.DueOn,
+			&i.Amount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLastNotifies = `-- name: ListLastNotifies :many
+SELECT DISTINCT ON (contract_id)
+    id, contract_id, action, payload, visitor_hash, created_at
+FROM audit_log
+WHERE action = 'notify' AND contract_id IS NOT NULL
+ORDER BY contract_id, created_at DESC
+`
+
+func (q *Queries) ListLastNotifies(ctx context.Context) ([]AuditLog, error) {
+	rows, err := q.db.Query(ctx, listLastNotifies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditLog{}
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ContractID,
+			&i.Action,
+			&i.Payload,
+			&i.VisitorHash,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPaymentsByContract = `-- name: ListPaymentsByContract :many
+SELECT p.id, p.contract_id, p.installment_id, p.amount, p.source
+FROM payments p
+WHERE p.contract_id = $1
+`
+
+type ListPaymentsByContractRow struct {
+	ID            pgtype.UUID
+	ContractID    pgtype.UUID
+	InstallmentID pgtype.UUID
+	Amount        pgtype.Numeric
+	Source        string
+}
+
+func (q *Queries) ListPaymentsByContract(ctx context.Context, contractID pgtype.UUID) ([]ListPaymentsByContractRow, error) {
+	rows, err := q.db.Query(ctx, listPaymentsByContract, contractID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPaymentsByContractRow{}
+	for rows.Next() {
+		var i ListPaymentsByContractRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ContractID,
+			&i.InstallmentID,
+			&i.Amount,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -61,3 +61,23 @@ WHERE vin = $1;
 SELECT vin, lat, lng, battery, speed, heading, ignition, locked, odometer, trip
 FROM vehicle_state
 ORDER BY vin;
+
+-- name: ListLeasingVehicles :many
+SELECT
+    v.vin,
+    v.display_id,
+    v.plate,
+    v.model,
+    COALESCE(vs.lat, 0)::float8 AS lat,
+    COALESCE(vs.lng, 0)::float8 AS lng,
+    COALESCE(vs.battery, 0)::int AS battery,
+    COALESCE(vs.speed, 0)::int AS speed,
+    COALESCE(vs.heading, 0)::int AS heading,
+    COALESCE(vs.ignition, false)::bool AS ignition,
+    COALESCE(vs.locked, false)::bool AS locked,
+    COALESCE(vs.odometer, 0)::float8 AS odometer,
+    COALESCE(vs.trip, 0)::float8 AS trip
+FROM vehicles v
+LEFT JOIN vehicle_state vs ON vs.vin = v.vin
+WHERE v.fleet = 'leasing'
+ORDER BY v.vin;

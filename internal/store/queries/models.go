@@ -54,6 +54,16 @@ type Customer struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type IdempotencyKey struct {
+	ContractID pgtype.UUID
+	Action     string
+	Key        string
+	ResourceID string
+	StatusCode int32
+	Body       []byte
+	CreatedAt  pgtype.Timestamptz
+}
+
 type Installment struct {
 	ID         pgtype.UUID
 	ContractID pgtype.UUID

@@ -219,7 +219,7 @@ export function connectTelemetry(
   EventSourceCtor: new (url: string) => StreamSource,
   onStatus?: (status: StreamStatus) => void,
 ): () => void {
-  const source = new EventSourceCtor('/api/stream');
+  const source = new EventSourceCtor('/api/stream?fleet=rental');
   let retries = 0;
   const markLive = () => {
     retries = 0;

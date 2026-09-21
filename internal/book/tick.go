@@ -50,7 +50,7 @@ func (b *Book) applyDuePayments(ctx context.Context, views []view, simDay time.T
 			if inst.DueOn.After(simDay) {
 				continue
 			}
-			if !shouldPay(v.profile, v.id, inst.DueOn, simDay, b.seed) {
+			if !shouldPay(v.profile, v.id, inst.DueOn, simDay, b.seed, v.hasNotify) {
 				continue
 			}
 			if v.profile != ProfilePontual && paymentBreaksFloor(views, v.id, inst.ID, simDay) {
@@ -72,12 +72,14 @@ func (b *Book) applyDuePayments(ctx context.Context, views []view, simDay time.T
 	return nil
 }
 
-func shouldPay(profile, contractID string, due, simDay time.Time, seed uint64) bool {
+func shouldPay(profile, contractID string, due, simDay time.Time, seed uint64, hasNotify bool) bool {
 	switch profile {
 	case ProfilePontual:
 		return !simDay.Before(dateOnly(due))
 	case ProfileAtrasa:
 		return !simDay.Before(atrasaPayOn(contractID, due, seed))
+	case ProfileRegulariza:
+		return hasNotify && !simDay.Before(dateOnly(due))
 	default:
 		return false
 	}

@@ -132,6 +132,77 @@ func (q *Queries) InsertRentalVehicle(ctx context.Context, arg InsertRentalVehic
 	return err
 }
 
+const listLeasingVehicles = `-- name: ListLeasingVehicles :many
+SELECT
+    v.vin,
+    v.display_id,
+    v.plate,
+    v.model,
+    COALESCE(vs.lat, 0)::float8 AS lat,
+    COALESCE(vs.lng, 0)::float8 AS lng,
+    COALESCE(vs.battery, 0)::int AS battery,
+    COALESCE(vs.speed, 0)::int AS speed,
+    COALESCE(vs.heading, 0)::int AS heading,
+    COALESCE(vs.ignition, false)::bool AS ignition,
+    COALESCE(vs.locked, false)::bool AS locked,
+    COALESCE(vs.odometer, 0)::float8 AS odometer,
+    COALESCE(vs.trip, 0)::float8 AS trip
+FROM vehicles v
+LEFT JOIN vehicle_state vs ON vs.vin = v.vin
+WHERE v.fleet = 'leasing'
+ORDER BY v.vin
+`
+
+type ListLeasingVehiclesRow struct {
+	Vin       string
+	DisplayID string
+	Plate     string
+	Model     string
+	Lat       float64
+	Lng       float64
+	Battery   int32
+	Speed     int32
+	Heading   int32
+	Ignition  bool
+	Locked    bool
+	Odometer  float64
+	Trip      float64
+}
+
+func (q *Queries) ListLeasingVehicles(ctx context.Context) ([]ListLeasingVehiclesRow, error) {
+	rows, err := q.db.Query(ctx, listLeasingVehicles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLeasingVehiclesRow{}
+	for rows.Next() {
+		var i ListLeasingVehiclesRow
+		if err := rows.Scan(
+			&i.Vin,
+			&i.DisplayID,
+			&i.Plate,
+			&i.Model,
+			&i.Lat,
+			&i.Lng,
+			&i.Battery,
+			&i.Speed,
+			&i.Heading,
+			&i.Ignition,
+			&i.Locked,
+			&i.Odometer,
+			&i.Trip,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRentalVehicles = `-- name: ListRentalVehicles :many
 SELECT vin, fleet, display_id, plate, model
 FROM vehicles

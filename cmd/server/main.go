@@ -45,6 +45,8 @@ var (
 	_ outbox.Store            = (*store.Postgres)(nil)
 	_ outbox.Publisher        = (*broker.Broker)(nil)
 	_ httpapi.LeasingCommands = (*block.Service)(nil)
+	_ httpapi.Blocker         = (*block.Service)(nil)
+	_ httpapi.Roster          = (*store.Postgres)(nil)
 )
 
 var errDatabaseURLRequired = errors.New("database_url is required")
@@ -101,9 +103,16 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return
 		}
-		hub.Publish(httpapi.Event{Name: "command", Data: data})
+		hub.Publish(httpapi.Event{Name: "command", Data: data, Fleet: httpapi.FleetRental})
 	})
 	blocks := block.New(pg, log)
+	blocks.SetListener(func(rec block.Record) {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return
+		}
+		hub.Publish(httpapi.Event{Name: "command", Data: data, Fleet: httpapi.FleetLeasing})
+	})
 	if err := blocks.Load(ctx); err != nil {
 		_ = b.Close()
 		return fmt.Errorf("load leasing commands: %w", err)
@@ -116,7 +125,7 @@ func run(log *slog.Logger) error {
 
 	wg.Go(func() {
 		if err := ingest.Run(ctx, ready, sink, cmds, log, ingest.WithLeasing(
-			leasingTelem{svc: blocks},
+			leasingTelem{svc: blocks, hub: hub},
 			leasingAck{svc: blocks},
 		)); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- fmt.Errorf("ingest: %w", err)
@@ -139,6 +148,10 @@ func run(log *slog.Logger) error {
 		httpapi.WithClock(clk),
 		httpapi.WithContracts(bk),
 		httpapi.WithLeasingCommands(blocks),
+		httpapi.WithBlocks(blocks),
+		httpapi.WithRoster(pg),
+		httpapi.WithIdempotency(httpapi.KeysFromStore(pg)),
+		httpapi.WithAuditHash(os.Getenv(httpapi.EnvAuditHashSecret), trustForwarded()),
 	).Handler()
 	httpDone := make(chan struct{})
 	wg.Go(func() {
@@ -310,7 +323,7 @@ func (s telemetrySink) Apply(t ingest.Telemetry) {
 	if err != nil {
 		return
 	}
-	s.hub.Publish(httpapi.Event{Name: "telemetry", Data: data})
+	s.hub.Publish(httpapi.Event{Name: "telemetry", Data: data, Fleet: httpapi.FleetRental})
 	if !crossed {
 		return
 	}
@@ -328,32 +341,64 @@ func (s telemetrySink) Apply(t ingest.Telemetry) {
 	if err != nil {
 		return
 	}
-	s.hub.Publish(httpapi.Event{Name: "area-exit", Data: payload})
+	s.hub.Publish(httpapi.Event{Name: "area-exit", Data: payload, Fleet: httpapi.FleetRental})
+}
+
+func trustForwarded() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(httpapi.EnvTrustForwarded))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 type leasingTelem struct {
 	svc *block.Service
+	hub *httpapi.Hub
 }
 
 func (l leasingTelem) Apply(t ingest.Telemetry) {
-	if l.svc == nil {
+	if l.svc != nil {
+		l.svc.NoteTelem(block.LastKnown{
+			VIN:       t.VIN,
+			Speed:     t.Speed,
+			Ignition:  t.Ignition,
+			Lat:       t.Lat,
+			Lng:       t.Lng,
+			Battery:   t.Battery,
+			Heading:   t.Heading,
+			Locked:    t.Locked,
+			Odometer:  t.Odometer,
+			Trip:      t.Trip,
+			Plate:     t.Plate,
+			Model:     t.Model,
+			DisplayID: t.DisplayID,
+		})
+	}
+	if l.hub == nil {
 		return
 	}
-	l.svc.NoteTelem(block.LastKnown{
+	v := store.Vehicle{
 		VIN:       t.VIN,
-		Speed:     t.Speed,
-		Ignition:  t.Ignition,
+		DisplayID: t.DisplayID,
 		Lat:       t.Lat,
 		Lng:       t.Lng,
+		Plate:     t.Plate,
+		Model:     t.Model,
 		Battery:   t.Battery,
+		Speed:     t.Speed,
 		Heading:   t.Heading,
+		Ignition:  t.Ignition,
 		Locked:    t.Locked,
 		Odometer:  t.Odometer,
 		Trip:      t.Trip,
-		Plate:     t.Plate,
-		Model:     t.Model,
-		DisplayID: t.DisplayID,
-	})
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	l.hub.Publish(httpapi.Event{Name: "telemetry", Data: data, Fleet: httpapi.FleetLeasing})
 }
 
 type leasingAck struct {

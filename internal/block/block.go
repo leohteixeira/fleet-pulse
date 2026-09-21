@@ -39,6 +39,15 @@ const (
 	Fleet = "leasing"
 	// AuditOrigin is the audit origin until visitor hash exists.
 	AuditOrigin = "SISTEMA"
+
+	// VehicleAtivo is not armed, blocked, or unlock-pending.
+	VehicleAtivo = "ativo"
+	// VehicleArmado is an in-flight block in ARMED.
+	VehicleArmado = "armado"
+	// VehicleBloqueado is an ACKED block that is not yet released.
+	VehicleBloqueado = "bloqueado"
+	// VehicleUnlockPending is an unlock accepted while the device is offline.
+	VehicleUnlockPending = "desbloqueio_pendente"
 	// ArmedTimeout is how long ARMED may stay offline.
 	ArmedTimeout = 30 * time.Second
 
@@ -134,15 +143,16 @@ type telem struct {
 
 // Service is the leasing block machine: request, arm, send, ack, timeout, unlock.
 type Service struct {
-	mu      sync.Mutex
-	records map[string]*Record
-	telem   map[string]telem
-	blocked map[string]bool
-	store   Store
-	clock   Clock
-	live    func() bool
-	log     *slog.Logger
-	newID   func() string
+	mu       sync.Mutex
+	records  map[string]*Record
+	telem    map[string]telem
+	blocked  map[string]bool
+	store    Store
+	clock    Clock
+	live     func() bool
+	log      *slog.Logger
+	newID    func() string
+	listener func(Record)
 }
 
 // Option configures optional clock and live-stream ports.
@@ -155,6 +165,13 @@ func WithClock(c Clock) Option {
 			s.clock = c
 		}
 	}
+}
+
+// SetListener receives a copy after each persisted state change. Optional SSE hook.
+func (s *Service) SetListener(fn func(Record)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listener = fn
 }
 
 // WithLive gates ARMED→SENT. Default is always live.
@@ -431,6 +448,60 @@ func (s *Service) Blocked(vin string) bool {
 	return s.blocked[vin]
 }
 
+// Online reports whether vin has recent NoteTelem within ArmedTimeout.
+func (s *Service) Online(vin string) bool {
+	if vin == "" {
+		return false
+	}
+	now := s.clock.Now()
+	s.mu.Lock()
+	last, ok := s.telem[vin]
+	s.mu.Unlock()
+	return isOnline(last, ok, now)
+}
+
+// VehicleState is the story-4 presentation flag for filters: armado, bloqueado,
+// desbloqueio_pendente, or ativo.
+func (s *Service) VehicleState(vin string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hasActiveState(vin, ActionUnlock, StateRequested) {
+		return VehicleUnlockPending
+	}
+	if s.blocked[vin] {
+		return VehicleBloqueado
+	}
+	if s.hasActiveState(vin, ActionBlock, StateArmed) {
+		return VehicleArmado
+	}
+	return VehicleAtivo
+}
+
+// ActiveBlock returns the in-flight block command for vin, if any.
+func (s *Service) ActiveBlock(vin string) (Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rec := range s.records {
+		if rec.VIN != vin || rec.Action != ActionBlock {
+			continue
+		}
+		switch rec.State {
+		case StateRequested, StateArmed, StateSent:
+			return *rec, true
+		}
+	}
+	return Record{}, false
+}
+
+func (s *Service) hasActiveState(vin, action, state string) bool {
+	for _, rec := range s.records {
+		if rec.VIN == vin && rec.Action == action && rec.State == state {
+			return true
+		}
+	}
+	return false
+}
+
 // Topic is the server publish topic for a leasing VIN.
 func Topic(vin string) string {
 	return "leasing/" + vin + "/commands"
@@ -495,6 +566,12 @@ func (s *Service) logChange(msg string, rec Record) {
 		"action", rec.Action,
 		"state", rec.State,
 	)
+	s.mu.Lock()
+	fn := s.listener
+	s.mu.Unlock()
+	if fn != nil {
+		fn(rec)
+	}
 }
 
 func auditOf(rec Record) AuditEntry {

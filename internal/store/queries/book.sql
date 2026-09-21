@@ -82,3 +82,55 @@ WHERE v.fleet = 'leasing'
       AND c.ended_on IS NULL
   )
 ORDER BY v.vin;
+
+-- name: GetContract :one
+SELECT
+    c.id,
+    c.vin,
+    c.payer_profile,
+    c.installment_value,
+    c.total_installments,
+    c.paid_count,
+    c.started_on,
+    cu.name AS customer_name
+FROM contracts c
+JOIN customers cu ON cu.id = c.customer_id
+JOIN vehicles v ON v.vin = c.vin
+WHERE c.id = $1
+  AND v.fleet = 'leasing';
+
+-- name: ListInstallmentsByContract :many
+SELECT i.id, i.contract_id, i.due_on, i.amount
+FROM installments i
+WHERE i.contract_id = $1
+ORDER BY i.due_on;
+
+-- name: ListPaymentsByContract :many
+SELECT p.id, p.contract_id, p.installment_id, p.amount, p.source
+FROM payments p
+WHERE p.contract_id = $1;
+
+-- name: ListAuditByContract :many
+SELECT id, contract_id, action, payload, visitor_hash, created_at
+FROM audit_log
+WHERE contract_id = $1
+ORDER BY created_at, id;
+
+-- name: InsertContractAudit :one
+INSERT INTO audit_log (contract_id, action, payload, visitor_hash)
+VALUES ($1, $2, $3, $4)
+RETURNING id;
+
+-- name: GetLastNotify :one
+SELECT id, contract_id, action, payload, visitor_hash, created_at
+FROM audit_log
+WHERE contract_id = $1 AND action = 'notify'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: ListLastNotifies :many
+SELECT DISTINCT ON (contract_id)
+    id, contract_id, action, payload, visitor_hash, created_at
+FROM audit_log
+WHERE action = 'notify' AND contract_id IS NOT NULL
+ORDER BY contract_id, created_at DESC;

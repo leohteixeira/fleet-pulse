@@ -38,7 +38,7 @@ type Ready interface {
 
 // HubPort is the publish/subscribe port the stream handler uses.
 type HubPort interface {
-	Subscribe() (events <-chan Event, unsubscribe func())
+	Subscribe(fleet string) (events <-chan Event, unsubscribe func())
 	Publish(Event)
 }
 
@@ -54,9 +54,13 @@ type Clock interface {
 	Snapshot() clock.Snapshot
 }
 
-// Contracts is the read-only book port declared by HTTP. The book package implements it.
+// Contracts is the book port declared by HTTP. The book package implements it.
 type Contracts interface {
 	List(ctx context.Context) ([]book.Contract, error)
+	Get(ctx context.Context, id string) (book.Detail, error)
+	Notify(ctx context.Context, in book.NotifyInput) (book.WriteResult, error)
+	Pay(ctx context.Context, in book.PayInput) (book.PayResult, error)
+	AppendAudit(ctx context.Context, in book.AuditInput) (string, error)
 }
 
 // LeasingCommands looks up a leasing command by id. Same JSON keys as rental.
@@ -90,14 +94,19 @@ func WithLeasingCommands(c LeasingCommands) Option {
 
 // Server is the stdlib HTTP surface for snapshot, lock/unlock, health, and SSE.
 type Server struct {
-	store     Store
-	hub       HubPort
-	unlocker  Unlocker
-	ready     Ready
-	clock     Clock
-	contracts Contracts
-	leasing   LeasingCommands
-	files     fs.FS
+	store          Store
+	hub            HubPort
+	unlocker       Unlocker
+	ready          Ready
+	clock          Clock
+	contracts      Contracts
+	leasing        LeasingCommands
+	blocks         Blocker
+	roster         Roster
+	keys           Idempotency
+	auditSecret    string
+	trustForwarded bool
+	files          fs.FS
 }
 
 // New wires consumer-owned store, hub, command, and ready ports.
@@ -105,7 +114,15 @@ func New(store Store, hub HubPort, unlocker Unlocker, ready Ready, opts ...Optio
 	if hub == nil {
 		hub = NewHub()
 	}
-	s := &Server{store: store, hub: hub, unlocker: unlocker, ready: ready, files: webui.FS()}
+	s := &Server{
+		store:          store,
+		hub:            hub,
+		unlocker:       unlocker,
+		ready:          ready,
+		files:          webui.FS(),
+		auditSecret:    auditSecretFromEnv(),
+		trustForwarded: trustForwardedFromEnv(),
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(s)
@@ -118,7 +135,13 @@ func New(store Store, hub HubPort, unlocker Unlocker, ready Ready, opts ...Optio
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/clock", s.clockHandler)
+	mux.HandleFunc("GET /api/leasing/vehicles", s.leasingVehicles)
 	mux.HandleFunc("GET /api/contracts", s.contractsHandler)
+	mux.HandleFunc("GET /api/contracts/{id}", s.contractDetail)
+	mux.HandleFunc("POST /api/contracts/{id}/notify", s.notifyContract)
+	mux.HandleFunc("POST /api/contracts/{id}/block", s.blockContract)
+	mux.HandleFunc("POST /api/contracts/{id}/block/cancel", s.cancelBlock)
+	mux.HandleFunc("POST /api/contracts/{id}/payments", s.payContract)
 	mux.HandleFunc("GET /api/vehicles", s.vehicles)
 	mux.HandleFunc("POST /api/vehicles/{vin}/unlock", s.unlock)
 	mux.HandleFunc("POST /api/vehicles/{vin}/lock", s.lock)
@@ -198,6 +221,16 @@ func (s *Server) contractsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if list == nil {
 		list = []book.Contract{}
+	}
+	list = book.FilterByBand(list, r.URL.Query().Get("overdueBand"))
+	if state := r.URL.Query().Get("vehicleState"); state != "" && s.blocks != nil {
+		filtered := make([]book.Contract, 0, len(list))
+		for _, c := range list {
+			if matchesVehicleState(s.blocks, c.VIN, state) {
+				filtered = append(filtered, c)
+			}
+		}
+		list = filtered
 	}
 	if err := writeJSON(w, http.StatusOK, contractsBody{Contracts: list}); err != nil {
 		slog.Error("contracts", "err", err)
@@ -296,6 +329,14 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.unlocker != nil {
 		if rec, ok := s.unlocker.Get(id); ok {
+			if err := writeJSON(w, http.StatusOK, rec); err != nil {
+				slog.Error("command response", "err", err)
+			}
+			return
+		}
+	}
+	if s.blocks != nil {
+		if rec, ok := s.blocks.Get(id); ok {
 			if err := writeJSON(w, http.StatusOK, rec); err != nil {
 				slog.Error("command response", "err", err)
 			}
