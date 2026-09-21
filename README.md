@@ -47,6 +47,10 @@ flowchart LR
 The HTTP contract is in [`openapi.yaml`](openapi.yaml): snapshot, SSE stream,
 unlock, lock, command lookup, and `healthz`.
 
+Simulated vehicles walk a **static OSM extract** of Centro and a west corridor
+(`internal/roads/centro.json`), embedded with `go:embed`. The running process
+never calls Overpass. Regenerate the file with `go run ./scripts/fetchroads`.
+
 ## Trade-offs
 
 The fleet and command machines live in an **in-memory store**. That keeps the

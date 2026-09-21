@@ -31,6 +31,7 @@ Interfaces are small and declared by the **consuming** package.
 - One vehicle is permanently offline (never connects / never acks).
 - Reachable vehicles fail command execution about 10% of the time and publish a failed ack.
 - Paths may cross the allowed Centro polygon so CAP-12 is demonstrable.
+- Movement follows a committed OSM extract (`internal/roads/centro.json`) embedded at build time; the runtime does not call Overpass.
 
 ## Store
 
