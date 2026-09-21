@@ -175,6 +175,9 @@ func run(log *slog.Logger) error {
 	wg.Go(func() {
 		relay.Run(relayCtx)
 	})
+	wg.Go(func() {
+		pg.RunRetention(ctx)
+	})
 
 	wg.Go(func() {
 		if err := sim.Run(simCtx, b.DialAddr()); err != nil && !errors.Is(err, context.Canceled) {

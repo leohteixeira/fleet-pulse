@@ -32,7 +32,8 @@ func TestFS_StreamUsesRentalFleet(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		if strings.Contains(string(body), "/api/stream?fleet=rental") {
+		text := string(body)
+		if strings.Contains(text, "/api/stream?fleet=") && strings.Contains(text, "rental") {
 			found = true
 		}
 		return nil

@@ -261,7 +261,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
 	}
