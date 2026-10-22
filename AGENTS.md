@@ -1,6 +1,6 @@
 # Fleet Pulse — agent instructions
 
-Repository-specific extension. Read `/workspace/CLAUDE.md` first; what is written here prevails
+Repository-specific extension. Read `/workspace/AGENTS.md` first; what is written here prevails
 only inside `repos/fleet-pulse`.
 
 The product brief is at `docs/fleet-pulse.md`. The visual design to replicate
