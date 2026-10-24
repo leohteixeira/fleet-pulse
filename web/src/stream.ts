@@ -1,3 +1,5 @@
+import { apiURL } from './base';
+
 export const STREAM_LIVE = 'STREAM · AO VIVO';
 export const STREAM_DOWN = (n: number) => `STREAM CAIU · RECONECTANDO (${n}/8)`;
 export const FREEZE_COPY = (seconds: number) => `Posições congeladas · último dado há ${seconds}s`;
@@ -36,7 +38,7 @@ export type StreamController = {
 };
 
 export function streamURL(fleet: Fleet): string {
-  return `/api/stream?fleet=${fleet}`;
+  return apiURL(`/api/stream?fleet=${fleet}`);
 }
 
 export function commandsBlocked(streamLive: boolean): boolean {

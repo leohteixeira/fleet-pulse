@@ -1,4 +1,5 @@
 import { mapWriteError, type WriteRefusal } from './carteiraCopy';
+import { apiURL } from './base';
 import type { ClockSnapshot, Contract, ContractDetail } from './carteiraState';
 import type { Vehicle } from './state';
 
@@ -41,7 +42,7 @@ export async function loadContractDetail(
 ): Promise<ContractDetail | null> {
   let response: Response;
   try {
-    response = await fetch(`/api/contracts/${id}`, { signal });
+    response = await fetch(apiURL(`/api/contracts/${id}`), { signal });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err;
@@ -82,7 +83,7 @@ export async function postPayment(id: string, daysLate: number): Promise<WriteOu
 async function postWrite(url: string, body: unknown, daysLate: number): Promise<WriteOutcome> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(apiURL(url), {
       method: 'POST',
       headers: {
         'Idempotency-Key': crypto.randomUUID(),
@@ -120,7 +121,7 @@ async function postWrite(url: string, body: unknown, daysLate: number): Promise<
 async function getJSON(url: string, signal: AbortSignal | undefined, error: string): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(url, { signal });
+    response = await fetch(apiURL(url), { signal });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err;

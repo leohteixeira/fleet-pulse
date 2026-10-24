@@ -151,3 +151,13 @@ Go tests use the already-committed embed artifacts.
 
 The lefthook `pre-push` hook runs the same gate locally (gitleaks, Go, web)
 before the push reaches GitHub. Install it with `lefthook install`.
+
+## VPS production deployment
+
+`compose.production.yaml` connects this application to the portfolio infrastructure external
+networks. Production is operated on the VPS host through the workspace `infra/portfolio` command;
+see the workspace `infra/README.md` for provisioning, secrets, deployment and recovery.
+The existing local development commands remain independent.
+
+The production frontend uses `VITE_BASE_PATH=/fleet-pulse/`; the default build base is `/`.
+Caddy removes the public prefix before forwarding to the Go server.

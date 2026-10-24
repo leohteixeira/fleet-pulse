@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 
 import { Feed } from './Feed';
+import { apiURL } from './base';
 import { ConsoleHeader } from './Header';
 import { MapView } from './MapView';
 import { Panel } from './Panel';
@@ -185,7 +186,7 @@ export async function sendCommand(
   try {
     let response: Response;
     try {
-      response = await fetch(`/api/vehicles/${vin}/${action}`, {
+      response = await fetch(apiURL(`/api/vehicles/${vin}/${action}`), {
         method: 'POST',
         headers: { 'Idempotency-Key': crypto.randomUUID() },
       });
@@ -220,7 +221,7 @@ export async function sendCommand(
 export async function loadSnapshot(signal: AbortSignal): Promise<Snapshot> {
   let response: Response;
   try {
-    response = await fetch('/api/vehicles', { signal });
+    response = await fetch(apiURL('/api/vehicles'), { signal });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err;

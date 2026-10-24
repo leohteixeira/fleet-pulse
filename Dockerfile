@@ -6,6 +6,8 @@ RUN corepack enable && corepack prepare pnpm@11.22.0 --activate
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY web/ ./
+ARG VITE_BASE_PATH=/
+ENV VITE_BASE_PATH=$VITE_BASE_PATH
 RUN pnpm build
 
 FROM golang:1.26.5-bookworm AS build

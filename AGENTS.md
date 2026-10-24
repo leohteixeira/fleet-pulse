@@ -1,6 +1,6 @@
 # Fleet Pulse — agent instructions
 
-Repository-specific extension. Read `/workspace/CLAUDE.md` first; what is written here prevails
+Repository-specific extension. Read `/workspace/AGENTS.md` first; what is written here prevails
 only inside `repos/fleet-pulse`.
 
 The product brief is at `docs/fleet-pulse.md`. The visual design to replicate
@@ -8,8 +8,8 @@ faithfully is at `docs/design/`.
 
 ## State
 
-Greenfield. The repository currently contains a license only. There is no Go module, no
-application code, and no frontend.
+The repository contains the Go simulator, React/Vite frontend, PostgreSQL portfolio persistence
+and production packaging. Public production routing uses `/fleet-pulse/`.
 
 ## Architecture rules
 
@@ -18,8 +18,8 @@ application code, and no frontend.
 - Interfaces are small and declared by the **consuming** package, not by the one implementing them.
 - HTTP uses the standard library. The MQTT broker is embedded via mochi-mqtt server v2.
 - Simulated devices connect as real MQTT clients, not in-process function calls.
-- The fleet store is in-memory behind an interface. This is a conscious MVP trade-off and must
-  remain documented.
+- Vehicle telemetry remains in memory behind an interface. Portfolio data uses PostgreSQL;
+  preserve the existing persistence, migration and recovery contracts.
 - The simulator instantiates 15–25 vehicles, each in its own goroutine, publishing telemetry
   every 2 seconds.
 - Door commands are asynchronous: `POST /api/vehicles/{vin}/unlock` and
@@ -33,13 +33,13 @@ application code, and no frontend.
 - Structured logs use `log/slog` JSON. Propagate a correlation identifier from HTTP through
   MQTT ack.
 - Graceful shutdown with `signal.NotifyContext`, draining streaming clients before exit.
-- Frontend: React 19, TypeScript, Vite, react-leaflet v5, plain CSS or CSS modules. No router,
+- Frontend: React 19, TypeScript, Vite, react-leaflet v5, plain CSS or CSS modules. React Router handles fleet and portfolio navigation;
   no state library, no component library. Fleet state in `useReducer` indexed by vehicle id.
   A single EventSource connection, guarded against StrictMode double mount. Static build
   embedded with `go:embed` and an `index.html` fallback. Replicate `docs/design/` faithfully:
   tokens, layout, marker anatomy, command states and degraded-stream treatment. Shipped UI
   copy is Portuguese. Dark default plus light-theme toggle. Esri Canvas World Gray tiles.
-- The MVP has no authentication, no database, no replicas, and no end-to-end tests.
+- The MVP has no authentication, no replicas, and no end-to-end tests. Portfolio data uses PostgreSQL.
 
 ### MQTT topics
 
@@ -71,7 +71,7 @@ Bind development servers to `0.0.0.0` so port forwarding works.
 ## Frontend conventions
 
 - React 19 with TypeScript, Vite, react-leaflet v5.
-- Plain CSS or CSS modules. No router, no state library, no component library.
+- Plain CSS or CSS modules. React Router handles navigation; no state library or component library.
 - Fleet state lives in `useReducer` indexed by VIN.
 - A single EventSource connection, protected against StrictMode double mount.
 - Presentation labels (`disponível`, `em uso`, `fora`, `offline`) are derived on the

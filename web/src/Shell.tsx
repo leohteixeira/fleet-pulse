@@ -13,7 +13,7 @@ import { applyTheme, readTheme, type Theme } from './theme';
 export function Root() {
   return (
     <StrictMode>
-      <BrowserRouter>
+      <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
         <Shell />
       </BrowserRouter>
     </StrictMode>

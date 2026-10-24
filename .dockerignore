@@ -8,6 +8,8 @@ coverage.out
 *.test
 .env
 .env.*
+**/.env
+**/.env.*
 web/node_modules
 web/dist
 docs
