@@ -1,110 +1,172 @@
-// Command seedroutes builds the committed Greater São Paulo route library.
-//
-// Run it offline only:
-//
-//	go run ./scripts/seedroutes -out internal/routes/seed.json
-//
-// The running server and tests never import this package and never call an
-// external router. Production loads the committed seed via go:embed.
+// Command seedroutes generates the committed route library from OSRM road geometry.
+// Run this maintenance command explicitly; the server and tests never call OSRM.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+	"time"
+
+	"github.com/leohteixeira/fleet-pulse/internal/routes"
 )
 
-const (
-	south = -23.63
-	north = -23.49
-	west  = -46.87
-	east  = -46.41
-)
-
-type point struct {
-	Lat float64 `json:"lat"`
-	Lng float64 `json:"lng"`
-}
-
-type poi struct {
-	ID   string  `json:"id"`
-	Name string  `json:"name"`
-	Lat  float64 `json:"lat"`
-	Lng  float64 `json:"lng"`
-}
-
-type route struct {
-	ID     string  `json:"id"`
-	From   string  `json:"from"`
-	To     string  `json:"to"`
-	Points []point `json:"points"`
-}
+type poi = routes.POI
 
 type library struct {
-	Version string  `json:"version"`
-	POIs    []poi   `json:"pois"`
-	Routes  []route `json:"routes"`
+	Version string         `json:"version"`
+	Source  string         `json:"source"`
+	POIs    []routes.POI   `json:"pois"`
+	Routes  []routes.Route `json:"routes"`
+}
+
+type routerResponse struct {
+	Code      string `json:"code"`
+	Waypoints []struct {
+		Location [2]float64 `json:"location"`
+	} `json:"waypoints"`
+	Routes []struct {
+		Legs []struct {
+			Steps []struct {
+				Geometry struct {
+					Coordinates [][2]float64 `json:"coordinates"`
+				} `json:"geometry"`
+			} `json:"steps"`
+		} `json:"legs"`
+	} `json:"routes"`
 }
 
 func main() {
 	out := flag.String("out", "internal/routes/seed.json", "output path")
+	endpoint := flag.String("router", "https://router.project-osrm.org", "OSRM base URL used only for seed generation")
 	flag.Parse()
-	if err := run(*out); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := run(ctx, *out, *endpoint); err != nil {
 		fmt.Fprintf(os.Stderr, "seedroutes: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(out string) error {
-	lib := build()
+func run(ctx context.Context, out, endpoint string) error {
+	lib, err := build(ctx, endpoint, catalog())
+	if err != nil {
+		return err
+	}
 	body, err := json.Marshal(lib)
 	if err != nil {
 		return fmt.Errorf("encode seed: %w", err)
 	}
-	if err := os.WriteFile(out, append(body, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", out, err)
+	// Validate the entire artifact before replacing the working embedded seed.
+	if _, err := routes.Parse(body); err != nil {
+		return fmt.Errorf("validate generated seed: %w", err)
 	}
-	fmt.Printf("wrote %s (%d pois, %d routes, %d bytes)\n", out, len(lib.POIs), len(lib.Routes), len(body)+1)
+	if err := os.WriteFile(out, append(body, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write seed: %w", err)
+	}
+	fmt.Printf("wrote %s (%d pois, %d road routes, %d bytes)\n", out, len(lib.POIs), len(lib.Routes), len(body)+1)
 	return nil
 }
 
-func build() library {
-	pois := catalog()
-
+func build(ctx context.Context, endpoint string, pois []routes.POI) (*library, error) {
 	const want = 300
-	routes := make([]route, 0, want)
-	n := len(pois)
-	i := 0
-	for a := 0; a < n && len(routes) < want; a++ {
-		for step := 1; step < n && len(routes) < want; step++ {
-			b := (a + step) % n
-			pts := walk(pois[a], pois[b])
-			if i%3 == 0 {
-				via := pois[(a+b+7)%n]
-				if via.ID != pois[a].ID && via.ID != pois[b].ID {
-					pts = append(walk(pois[a], via), walk(via, pois[b])[1:]...)
+	lib := &library{Version: "2", Source: "osrm/openstreetmap", POIs: pois, Routes: make([]routes.Route, 0, want)}
+	// Each tour visits every POI. Coprime strides give different destinations,
+	// while retaining outgoing routes across the whole catalog.
+	for _, stride := range []int{1, 3, 5, 7, 9, 11, 13, 15, 17, 19} {
+		tour := make([]routes.POI, 0, len(pois)+1)
+		for i := 0; i <= len(pois); i++ {
+			tour = append(tour, pois[(i*stride)%len(pois)])
+		}
+		response, err := fetchTour(ctx, endpoint, tour)
+		if err != nil {
+			return nil, err
+		}
+		if stride == 1 {
+			for i := range pois {
+				steps := response.Routes[0].Legs[i].Steps
+				if len(steps) == 0 || len(steps[0].Geometry.Coordinates) == 0 {
+					return nil, fmt.Errorf("router returned empty road geometry for poi %q", pois[i].ID)
+				}
+				location := steps[0].Geometry.Coordinates[0]
+				pois[i].Lng, pois[i].Lat = location[0], location[1]
+			}
+		}
+		for i, leg := range response.Routes[0].Legs {
+			from, to := tour[i].ID, tour[i+1].ID
+			points := make([]routes.Point, 0)
+			inBounds := true
+			for _, step := range leg.Steps {
+				for _, coord := range step.Geometry.Coordinates {
+					p := routes.Point{Lng: coord[0], Lat: coord[1]}
+					if !routes.InBounds(p.Lat, p.Lng) {
+						inBounds = false
+					}
+					if len(points) == 0 || points[len(points)-1] != p {
+						points = append(points, p)
+					}
 				}
 			}
-			i++
-			pts = clampPoints(dedupe(pts))
-			if len(pts) < 2 {
+			// Reject a route outside the viewport. Clamping or simplifying vertices
+			// would cut across blocks and recreate the off-road regression.
+			if !inBounds || len(points) < 2 {
 				continue
 			}
-			routes = append(routes, route{
-				ID:     fmt.Sprintf("r%04d", len(routes)+1),
-				From:   pois[a].ID,
-				To:     pois[b].ID,
-				Points: pts,
+			first, last := points[0], points[len(points)-1]
+			a, b := pois[(i*stride)%len(pois)], pois[((i+1)*stride)%len(pois)]
+			if first != (routes.Point{Lat: a.Lat, Lng: a.Lng}) || last != (routes.Point{Lat: b.Lat, Lng: b.Lng}) {
+				continue
+			}
+			lib.Routes = append(lib.Routes, routes.Route{
+				ID: fmt.Sprintf("r%04d", len(lib.Routes)+1), From: from, To: to, Points: points,
 			})
+			if len(lib.Routes) == want {
+				return lib, nil
+			}
 		}
 	}
+	return nil, fmt.Errorf("only %d connected in-bounds road routes, want %d", len(lib.Routes), want)
+}
 
-	return library{
-		Version: "1",
-		POIs:    pois,
-		Routes:  routes,
+func fetchTour(ctx context.Context, endpoint string, tour []routes.POI) (*routerResponse, error) {
+	coords := make([]string, 0, len(tour))
+	for _, p := range tour {
+		coords = append(coords, fmt.Sprintf("%.6f,%.6f", p.Lng, p.Lat))
 	}
+	url := strings.TrimRight(endpoint, "/") + "/route/v1/driving/" + strings.Join(coords, ";") +
+		"?overview=false&geometries=geojson&steps=true&continue_straight=false"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build router request: %w", err)
+	}
+	req.Header.Set("User-Agent", "fleet-pulse-seedroutes/2.0")
+	client := &http.Client{Timeout: 45 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch road routes: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("router status %d", res.StatusCode)
+	}
+	var response routerResponse
+	if err := json.NewDecoder(io.LimitReader(res.Body, 32<<20)).Decode(&response); err != nil {
+		return nil, fmt.Errorf("decode router response: %w", err)
+	}
+	valid := response.Code == "Ok" && len(response.Routes) == 1
+	if !valid || len(response.Waypoints) != len(tour) {
+		return nil, fmt.Errorf("invalid router response: %q", response.Code)
+	}
+	if len(response.Routes[0].Legs) != len(tour)-1 {
+		return nil, fmt.Errorf("router returned incomplete tour")
+	}
+	return &response, nil
 }
 
 func catalog() []poi {
@@ -172,63 +234,4 @@ func catalog() []poi {
 		{ID: "trianon", Name: "Trianon-Masp", Lat: -23.5625, Lng: -46.6540},
 		{ID: "augusta", Name: "Augusta", Lat: -23.5530, Lng: -46.6510},
 	}
-}
-
-func walk(from, to poi) []point {
-	// Manhattan walk on the local viewport grid: east-west, then north-south.
-	steps := 4
-	out := make([]point, 0, steps+2)
-	out = append(out, point{Lat: from.Lat, Lng: from.Lng})
-	for i := 1; i <= steps; i++ {
-		t := float64(i) / float64(steps+1)
-		lat, lng := from.Lat, from.Lng
-		if i <= steps/2 {
-			lng = from.Lng + t*2*(to.Lng-from.Lng)
-			if i == steps/2 {
-				lng = to.Lng
-			}
-		} else {
-			lng = to.Lng
-			u := float64(i-steps/2) / float64(steps-steps/2)
-			lat = from.Lat + u*(to.Lat-from.Lat)
-		}
-		out = append(out, point{Lat: lat, Lng: lng})
-	}
-	out = append(out, point{Lat: to.Lat, Lng: to.Lng})
-	return out
-}
-
-func dedupe(pts []point) []point {
-	if len(pts) == 0 {
-		return []point{}
-	}
-	out := []point{pts[0]}
-	for _, p := range pts[1:] {
-		last := out[len(out)-1]
-		if p.Lat == last.Lat && p.Lng == last.Lng {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-func clampPoints(pts []point) []point {
-	out := make([]point, 0, len(pts))
-	for _, p := range pts {
-		p.Lat = clamp(p.Lat, south, north)
-		p.Lng = clamp(p.Lng, west, east)
-		out = append(out, p)
-	}
-	return out
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

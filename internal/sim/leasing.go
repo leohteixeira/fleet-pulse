@@ -54,6 +54,7 @@ func NewLeasingFleet() []Vehicle {
 			nextIncidentAt:   2 + src.IntN(4),
 			nextIncidentKind: incidentKind(1 + src.IntN(3)),
 		}
+		setRoutePosition(&v, r)
 		fleet = append(fleet, v)
 	}
 	return fleet
