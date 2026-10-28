@@ -83,7 +83,17 @@ leasing vehicles, contracts, notify, block, cancel, payments, and `healthz`.
 Motion follows a **committed Greater São Paulo route library**
 (`internal/routes/seed.json`, ~60 POIs and ~300 routes), embedded with
 `go:embed`. The running process never calls OSRM, Overpass, or any external
-router. Rebuild the seed offline with `go run ./scripts/seedroutes`.
+router. Regenerate the seed with `go run ./scripts/seedroutes`; this explicit
+maintenance command needs network access to OSRM (override its base URL with
+`-router`). It preserves full road geometry from
+[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
+(Open Database License, ODbL), snaps POIs to road
+endpoints, and rejects routes that leave the viewport rather than clamping
+their coordinates. Router and validation failures leave the existing seed unchanged.
+Vehicles start on their assigned road and continue only onto routes starting
+at their current destination, consuming the remaining movement distance at
+each transition. Rebuild and restart the server after changing the embedded
+seed.
 Telemetry timestamps stay real time. `GET /api/clock` reports the simulated
 instant, the rate, and wall-clock time. `GET /api/contracts` lists the active
 40–60 leasing book. Write routes require `Idempotency-Key`.

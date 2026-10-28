@@ -63,6 +63,7 @@ type Route struct {
 // Library is the load-only seed: POIs plus routes. Callers must not mutate it.
 type Library struct {
 	Version string
+	Source  string
 	POIs    []POI
 	Routes  []Route
 	byID    map[string]int
@@ -70,6 +71,7 @@ type Library struct {
 
 type fileLibrary struct {
 	Version string  `json:"version"`
+	Source  string  `json:"source"`
 	POIs    []POI   `json:"pois"`
 	Routes  []Route `json:"routes"`
 }
@@ -92,7 +94,7 @@ func Parse(raw []byte) (*Library, error) {
 	}
 
 	pois := slices.Clone(file.POIs)
-	poiIDs := make(map[string]struct{}, len(pois))
+	poiIDs := make(map[string]Point, len(pois))
 	for i, p := range pois {
 		if p.ID == "" {
 			return nil, fmt.Errorf("routes: poi %d missing id", i)
@@ -100,13 +102,17 @@ func Parse(raw []byte) (*Library, error) {
 		if _, ok := poiIDs[p.ID]; ok {
 			return nil, fmt.Errorf("routes: duplicate poi id %q", p.ID)
 		}
-		poiIDs[p.ID] = struct{}{}
+		poiIDs[p.ID] = Point{Lat: p.Lat, Lng: p.Lng}
 		if !InBounds(p.Lat, p.Lng) {
 			return nil, fmt.Errorf("routes: poi %q outside greater sp bounds", p.ID)
 		}
 	}
 
+	if file.Version != "2" || file.Source != "osrm/openstreetmap" {
+		return nil, fmt.Errorf("routes: seed must contain version 2 osrm/openstreetmap road geometry")
+	}
 	routes := make([]Route, 0, len(file.Routes))
+	outgoing := make(map[string]bool, len(pois))
 	byID := make(map[string]int, len(file.Routes))
 	for i, r := range file.Routes {
 		if r.ID == "" {
@@ -133,13 +139,33 @@ func Parse(raw []byte) (*Library, error) {
 				return nil, fmt.Errorf("routes: route %q point %d outside greater sp bounds", r.ID, j)
 			}
 		}
+		if pts[0] != poiIDs[r.From] || pts[len(pts)-1] != poiIDs[r.To] {
+			return nil, fmt.Errorf("routes: route %q endpoints do not match road-snapped pois", r.ID)
+		}
+		hasLength := false
+		for _, pt := range pts[1:] {
+			if pt != pts[0] {
+				hasLength = true
+				break
+			}
+		}
+		if !hasLength {
+			return nil, fmt.Errorf("routes: route %q has no length", r.ID)
+		}
+		outgoing[r.From] = true
 		byID[r.ID] = len(routes)
 		r.Points = pts
 		routes = append(routes, r)
 	}
 
+	for _, p := range pois {
+		if !outgoing[p.ID] {
+			return nil, fmt.Errorf("routes: poi %q has no outgoing road route", p.ID)
+		}
+	}
 	return &Library{
 		Version: file.Version,
+		Source:  file.Source,
 		POIs:    pois,
 		Routes:  routes,
 		byID:    byID,

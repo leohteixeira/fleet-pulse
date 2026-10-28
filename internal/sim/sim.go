@@ -168,6 +168,9 @@ func NewFleet() []Vehicle {
 			nextIncidentKind: incidentKind(1 + src.IntN(3)),
 		}
 		applyCursor(&v, g.Snap(v.Lat, v.Lng))
+		if v.VIN != WanderVIN {
+			startOnRoute(&v, routes.Default())
+		}
 		fleet = append(fleet, v)
 	}
 	return fleet
@@ -431,84 +434,135 @@ func stepVehicle(v *Vehicle) {
 func stepAlongRoute(v *Vehicle, lib *routes.Library) {
 	r, ok := lib.Lookup(v.RouteID)
 	if !ok || len(r.Points) < 2 {
-		ids := lib.RouteIDs()
-		if len(ids) == 0 {
-			return
-		}
-		pick := 0
-		if v.rng != nil {
-			pick = v.rng.IntN(len(ids))
-		}
-		v.RouteID = ids[pick]
+		startOnRoute(v, lib)
 		r, ok = lib.Lookup(v.RouteID)
 		if !ok || len(r.Points) < 2 {
 			return
 		}
-		v.routeIdx = -1
 	}
-	km := float64(v.Speed) * PublishInterval.Hours() * visualScale
-	if km <= 0 {
+	meters := float64(v.Speed) * PublishInterval.Hours() * visualScale * 1000
+	if meters <= 0 {
 		return
 	}
-	meters := km * 1000
-	if v.routeIdx < 0 || v.routeIdx >= len(r.Points)-1 {
+	budget := meters
+	if v.routeIdx < 0 {
 		v.routeIdx, v.routeAlong = nearestOnRoute(r.Points, v.Lat, v.Lng)
 	}
-	for meters > 1e-6 && v.routeIdx < len(r.Points)-1 {
+	for meters > 1e-6 {
+		if v.routeIdx >= len(r.Points)-1 {
+			next, ok := continuation(v, lib, r)
+			if !ok {
+				break
+			}
+			r = next
+			v.RouteID, v.routeIdx, v.routeAlong = r.ID, 0, 0
+		}
 		a, b := r.Points[v.routeIdx], r.Points[v.routeIdx+1]
 		seg := roads.Distance(a.Lat, a.Lng, b.Lat, b.Lng)
-		if seg <= 1e-6 {
-			v.routeIdx++
-			v.routeAlong = 0
-			continue
-		}
 		remain := seg - v.routeAlong
 		if remain <= 1e-6 {
 			v.routeIdx++
 			v.routeAlong = 0
 			continue
 		}
-		if meters <= remain {
-			t := (v.routeAlong + meters) / seg
-			v.Lat = a.Lat + t*(b.Lat-a.Lat)
-			v.Lng = a.Lng + t*(b.Lng-a.Lng)
-			v.Heading = displacementHeading(a.Lat, a.Lng, b.Lat, b.Lng)
-			v.routeAlong += meters
-			meters = 0
-			break
-		}
-		meters -= remain
-		v.routeIdx++
-		v.routeAlong = 0
-		v.Lat, v.Lng = b.Lat, b.Lng
-		v.Heading = displacementHeading(a.Lat, a.Lng, b.Lat, b.Lng)
-	}
-	if v.routeIdx >= len(r.Points)-1 {
-		ids := lib.RouteIDs()
-		if len(ids) > 0 {
-			if v.rng != nil {
-				v.RouteID = ids[v.rng.IntN(len(ids))]
-			} else {
-				v.RouteID = ids[0]
-			}
-			if next, ok := lib.Lookup(v.RouteID); ok && len(next.Points) >= 2 {
-				v.routeIdx, v.routeAlong = nearestOnRoute(next.Points, v.Lat, v.Lng)
-			} else {
-				v.routeIdx = -1
-				v.routeAlong = 0
-			}
-		} else {
-			v.routeIdx = 0
+		moved := math.Min(meters, remain)
+		v.routeAlong += moved
+		meters -= moved
+		setRoutePosition(v, r)
+		if moved == remain {
+			v.routeIdx++
 			v.routeAlong = 0
 		}
 	}
+	km := (budget - meters) / 1000
 	v.Odometer += km
 	v.Trip += km
 }
 
+// startOnRoute initializes a cursor near its spawn before the first snapshot.
+// A seeded search accepts the first road within 100m, avoiding a full scan of
+// every route for each rental while retaining route variety around Centro.
+func startOnRoute(v *Vehicle, lib *routes.Library) {
+	if len(lib.Routes) == 0 {
+		return
+	}
+	first := 0
+	if v.rng != nil {
+		first = v.rng.IntN(len(lib.Routes))
+	}
+	best, chosen, index, along := math.MaxFloat64, -1, 0, 0.0
+	for offset := range len(lib.Routes) {
+		i := (first + offset) % len(lib.Routes)
+		r := lib.Routes[i]
+		if len(r.Points) < 2 {
+			continue
+		}
+		idx, meters := nearestOnRouteWithin(r.Points, v.Lat, v.Lng, best)
+		if idx < 0 {
+			continue
+		}
+		_, distance := projectRoute(r.Points[idx], r.Points[idx+1], v.Lat, v.Lng)
+		best, chosen, index, along = distance, i, idx, meters
+		if distance <= 100 {
+			break
+		}
+	}
+	if chosen < 0 {
+		return
+	}
+	r := lib.Routes[chosen]
+	v.RouteID, v.routeIdx, v.routeAlong = r.ID, index, along
+	setRoutePosition(v, r)
+}
+
+func setRoutePosition(v *Vehicle, r routes.Route) {
+	a, b := r.Points[v.routeIdx], r.Points[v.routeIdx+1]
+	seg := roads.Distance(a.Lat, a.Lng, b.Lat, b.Lng)
+	t := 0.0
+	if seg > 1e-6 {
+		t = v.routeAlong / seg
+	}
+	v.Lat = a.Lat + t*(b.Lat-a.Lat)
+	v.Lng = a.Lng + t*(b.Lng-a.Lng)
+	v.Heading = displacementHeading(a.Lat, a.Lng, b.Lat, b.Lng)
+}
+
+func continuation(v *Vehicle, lib *routes.Library, current routes.Route) (routes.Route, bool) {
+	candidates := make([]int, 0)
+	end := current.Points[len(current.Points)-1]
+	for i, r := range lib.Routes {
+		if r.From == current.To && len(r.Points) >= 2 && r.Points[0] == end {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return routes.Route{}, false
+	}
+	pick := 0
+	if v.rng != nil {
+		pick = v.rng.IntN(len(candidates))
+	}
+	return lib.Routes[candidates[pick]], true
+}
+
 func nearestOnRoute(pts []routes.Point, lat, lng float64) (idx int, along float64) {
-	bestDist := math.MaxFloat64
+	return nearestOnRouteWithin(pts, lat, lng, math.MaxFloat64)
+}
+
+func nearestOnRouteWithin(pts []routes.Point, lat, lng, limit float64) (idx int, along float64) {
+	idx = -1
+	bestDist := limit
+	cosLat := math.Cos(routes.South * math.Pi / 180)
 	for i := 0; i < len(pts)-1; i++ {
+		// Full road geometry has many distant segments. A conservative bounding
+		// box avoids projecting them while finding the nearest Centro spawn.
+		a, b := pts[i], pts[i+1]
+		latSlack := bestDist / (kmPerDegLat * 1000)
+		lngSlack := latSlack / cosLat
+		if lat < math.Min(a.Lat, b.Lat)-latSlack || lat > math.Max(a.Lat, b.Lat)+latSlack ||
+			lng < math.Min(a.Lng, b.Lng)-lngSlack || lng > math.Max(a.Lng, b.Lng)+lngSlack {
+			continue
+		}
 		alongSeg, dist := projectRoute(pts[i], pts[i+1], lat, lng)
 		if dist < bestDist {
 			bestDist = dist
