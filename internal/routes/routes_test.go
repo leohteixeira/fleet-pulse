@@ -1,6 +1,7 @@
 package routes_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -72,6 +73,63 @@ func TestParse_CorruptSeed(t *testing.T) {
 				t.Fatal("Parse() error = nil, want wrapped failure")
 			}
 			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Parse() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_RejectsDisconnectedRoadLibrary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*routes.Library)
+		want   string
+	}{
+		{name: "synthetic seed", mutate: func(lib *routes.Library) { lib.Version = "1" }, want: "road geometry"},
+		{name: "disconnected endpoint", mutate: func(lib *routes.Library) {
+			lib.Routes[0].Points[0].Lat += 0.00001
+		}, want: "endpoints do not match"},
+		{name: "dead end", mutate: func(lib *routes.Library) {
+			origin := lib.Routes[0].From
+			var replacement routes.Route
+			for _, r := range lib.Routes {
+				if r.From != origin {
+					replacement = r
+					break
+				}
+			}
+			for i, r := range lib.Routes {
+				if r.From == origin {
+					lib.Routes[i] = replacement
+					lib.Routes[i].ID = r.ID
+				}
+			}
+		}, want: "no outgoing road route"},
+		{name: "zero distance", mutate: func(lib *routes.Library) {
+			r := &lib.Routes[0]
+			r.To = r.From
+			r.Points = []routes.Point{r.Points[0], r.Points[0]}
+		}, want: "has no length"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			lib, err := routes.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(lib)
+			raw, err := json.Marshal(struct {
+				Version string         `json:"version"`
+				Source  string         `json:"source"`
+				POIs    []routes.POI   `json:"pois"`
+				Routes  []routes.Route `json:"routes"`
+			}{lib.Version, lib.Source, lib.POIs, lib.Routes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := routes.Parse(raw); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Parse() error = %v, want %q", err, tt.want)
 			}
 		})

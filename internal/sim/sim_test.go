@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -87,6 +88,8 @@ func TestNewFleet(t *testing.T) {
 func TestRunFleet_SkipsOfflineVIN(t *testing.T) {
 	t.Parallel()
 
+	// Construct the road-backed fixture before timing asynchronous MQTT startup.
+	fleet := NewFleet()
 	var (
 		mu     sync.Mutex
 		dialed []string
@@ -101,7 +104,7 @@ func TestRunFleet_SkipsOfflineVIN(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- runFleet(ctx, "127.0.0.1:1883", NewFleet(), time.Hour, dial)
+		done <- runFleet(ctx, "127.0.0.1:1883", fleet, time.Hour, dial)
 	}()
 
 	waitFor(t, time.Second, func() bool {
@@ -521,6 +524,88 @@ func TestStepVehicle_MovesInUseAndHoldsParked(t *testing.T) {
 	}
 }
 
+func TestFleets_FirstMovementIsContinuous(t *testing.T) {
+	t.Parallel()
+	fleet := append(NewFleet(), NewLeasingFleet()...)
+	for _, v := range fleet {
+		if v.VIN == WanderVIN || v.IsOffline || !v.Ignition {
+			continue
+		}
+		before := v
+		stepVehicle(&v)
+		budget := float64(v.Speed) * PublishInterval.Hours() * visualScale * 1000
+		distance := roads.Distance(before.Lat, before.Lng, v.Lat, v.Lng)
+		if distance > budget+0.01 {
+			t.Errorf("%s jumped %.1fm with a %.1fm movement budget", v.VIN, distance, budget)
+		}
+	}
+}
+
+func TestStepAlongRoute_ContinuesFromDestination(t *testing.T) {
+	t.Parallel()
+	lib, err := routes.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A turn, an unrelated route, and the connected continuation. Only the
+	// continuation may be selected when the first route ends.
+	lib.Routes = lib.Routes[:3]
+	a := routes.Point{Lat: -23.55, Lng: -46.63}
+	b := routes.Point{Lat: -23.55, Lng: -46.6299}
+	c := routes.Point{Lat: -23.549, Lng: -46.6299}
+	lib.Routes[0].From, lib.Routes[0].To = "a", "b"
+	lib.Routes[0].Points = []routes.Point{a, b}
+	lib.Routes[1].From, lib.Routes[1].To = "elsewhere", "a"
+	lib.Routes[1].Points = []routes.Point{{Lat: -23.56, Lng: -46.64}, a}
+	lib.Routes[2].From, lib.Routes[2].To = "b", "c"
+	lib.Routes[2].Points = []routes.Point{b, c}
+	v := Vehicle{Lat: a.Lat, Lng: a.Lng, Speed: 36, RouteID: lib.Routes[0].ID}
+	stepAlongRoute(&v, lib)
+	budget := float64(v.Speed) * PublishInterval.Hours() * visualScale * 1000
+	want := budget - roads.Distance(a.Lat, a.Lng, b.Lat, b.Lng)
+	got := roads.Distance(b.Lat, b.Lng, v.Lat, v.Lng)
+	if v.RouteID != lib.Routes[2].ID || math.Abs(got-want) > 0.01 || v.Lng != b.Lng {
+		t.Fatalf("route=%s position=(%v,%v), want connected route %s and %.2fm past turn (got %.2fm)",
+			v.RouteID, v.Lat, v.Lng, lib.Routes[2].ID, want, got)
+	}
+	if math.Abs(v.Trip-budget/1000) > 1e-9 || v.Trip != v.Odometer {
+		t.Fatalf("trip=%v odometer=%v, want %.6fkm", v.Trip, v.Odometer, budget/1000)
+	}
+}
+
+func TestStepAlongRoute_AllSeedDestinationsRemainContinuous(t *testing.T) {
+	t.Parallel()
+	lib := routes.Default()
+	for _, r := range lib.Routes {
+		t.Run(r.ID, func(t *testing.T) {
+			idx := len(r.Points) - 2
+			a, b := r.Points[idx], r.Points[idx+1]
+			v := Vehicle{
+				Speed: 36, RouteID: r.ID, routeIdx: idx,
+				routeAlong: math.Max(0, roads.Distance(a.Lat, a.Lng, b.Lat, b.Lng)-0.5),
+			}
+			setRoutePosition(&v, r)
+			before := v
+			stepAlongRoute(&v, lib)
+			next, ok := lib.Lookup(v.RouteID)
+			if !ok || next.From != r.To {
+				t.Fatalf("route %s ended at %s but continued on %s from %s", r.ID, r.To, v.RouteID, next.From)
+			}
+			budget := float64(v.Speed) * PublishInterval.Hours() * visualScale * 1000
+			if distance := roads.Distance(before.Lat, before.Lng, v.Lat, v.Lng); distance > budget+0.01 {
+				t.Fatalf("jumped %.2fm with a %.2fm movement budget", distance, budget)
+			}
+			if math.Abs(v.Trip-budget/1000) > 1e-9 {
+				t.Fatalf("trip=%v, want %.6fkm", v.Trip, budget/1000)
+			}
+			_, distance := projectRoute(next.Points[v.routeIdx], next.Points[v.routeIdx+1], v.Lat, v.Lng)
+			if distance > 0.01 {
+				t.Fatalf("position is %.2fm away from the next road segment", distance)
+			}
+		})
+	}
+}
+
 func TestNewFleet_ParkedHaveNoSpeed(t *testing.T) {
 	t.Parallel()
 
@@ -912,8 +997,9 @@ func TestLeasingTopicHelpers(t *testing.T) {
 func nearLibraryRoute(lat, lng float64) bool {
 	lib := routes.Default()
 	for _, r := range lib.Routes {
-		for _, p := range r.Points {
-			if roads.Distance(lat, lng, p.Lat, p.Lng) < 250 {
+		for i := 0; i < len(r.Points)-1; i++ {
+			_, distance := projectRoute(r.Points[i], r.Points[i+1], lat, lng)
+			if distance < 0.01 {
 				return true
 			}
 		}
