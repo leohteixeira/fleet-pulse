@@ -109,8 +109,10 @@ real MQTT clients on `leasing/{vin}/telemetry|ack` and are never seeded into
 There is no login. Every visitor can run every action. Last-known positions
 live in PostgreSQL (`vehicles` + `vehicle_state`) with an in-memory
 `vehicle_state` cache in front of the upsert. Position history is out of
-scope — the process does not sample or store past points. Finished commands
-and `audit_log` rows older than 7 days are deleted by a retention job.
+scope — the process does not sample or store past points. Finished commands,
+`audit_log` rows and ended contracts (with their installments, payments,
+idempotency keys and orphaned customers) older than 7 days are deleted by a
+retention job.
 `GET /healthz` is ready only when the process is up **and** the pool pings.
 Rental door commands stay in process memory; a restart still wipes the 5s
 machine and the SSE feed. Auth and replicas remain out of scope.
