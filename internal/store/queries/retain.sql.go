@@ -24,6 +24,37 @@ func (q *Queries) DeleteAuditOlderThan(ctx context.Context, createdAt pgtype.Tim
 	return result.RowsAffected(), nil
 }
 
+const deleteContracts = `-- name: DeleteContracts :execrows
+DELETE FROM contracts
+WHERE id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteContracts(ctx context.Context, contractIds []pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteContracts, contractIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteCustomersWithoutContractOlderThan = `-- name: DeleteCustomersWithoutContractOlderThan :execrows
+DELETE FROM customers cu
+WHERE cu.created_at < $1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM contracts c
+    WHERE c.customer_id = cu.id
+  )
+`
+
+func (q *Queries) DeleteCustomersWithoutContractOlderThan(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCustomersWithoutContractOlderThan, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteFinishedCommandsOlderThan = `-- name: DeleteFinishedCommandsOlderThan :execrows
 DELETE FROM commands
 WHERE updated_at < $1
@@ -36,4 +67,72 @@ func (q *Queries) DeleteFinishedCommandsOlderThan(ctx context.Context, updatedAt
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteIdempotencyByContracts = `-- name: DeleteIdempotencyByContracts :exec
+DELETE FROM idempotency_keys
+WHERE contract_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteIdempotencyByContracts(ctx context.Context, contractIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteIdempotencyByContracts, contractIds)
+	return err
+}
+
+const deleteInstallmentsByContracts = `-- name: DeleteInstallmentsByContracts :exec
+DELETE FROM installments
+WHERE contract_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteInstallmentsByContracts(ctx context.Context, contractIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteInstallmentsByContracts, contractIds)
+	return err
+}
+
+const deletePaymentsByContracts = `-- name: DeletePaymentsByContracts :exec
+DELETE FROM payments
+WHERE contract_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeletePaymentsByContracts(ctx context.Context, contractIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deletePaymentsByContracts, contractIds)
+	return err
+}
+
+const listEndedContractsOlderThan = `-- name: ListEndedContractsOlderThan :many
+SELECT c.id
+FROM contracts c
+WHERE c.ended_on IS NOT NULL
+  AND c.created_at < $1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM audit_log a
+    WHERE a.contract_id = c.id
+  )
+LIMIT $2
+`
+
+type ListEndedContractsOlderThanParams struct {
+	CreatedAt pgtype.Timestamptz
+	Limit     int32
+}
+
+func (q *Queries) ListEndedContractsOlderThan(ctx context.Context, arg ListEndedContractsOlderThanParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listEndedContractsOlderThan, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
