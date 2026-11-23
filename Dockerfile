@@ -25,6 +25,6 @@ RUN apt-get update \
 COPY --from=build /out/server /server
 EXPOSE 8300
 USER nobody
-HEALTHCHECK --interval=5s --timeout=3s --retries=10 --start-period=20s \
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 --start-period=30s --start-interval=2s \
 	CMD curl -fsS http://127.0.0.1:8300/healthz >/dev/null || exit 1
 ENTRYPOINT ["/server"]
